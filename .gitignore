@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# PyInstaller Build-Artefakte
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+*.dmg
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

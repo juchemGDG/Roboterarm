@@ -1,0 +1,99 @@
+name: Build Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhaengigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: macOS Installer bauen
+        run: |
+          chmod +x scripts/build_mac.sh
+          ./scripts/build_mac.sh
+
+      - name: macOS Artefakte hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: |
+            dist/RoboterarmSteuerung-macOS.dmg
+            dist/RoboterarmSteuerung.app
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Inno Setup installieren
+        run: choco install innosetup -y
+
+      - name: Abhaengigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Windows Installer bauen
+        run: scripts\build_windows.bat
+
+      - name: Windows Artefakte hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/RoboterarmSteuerung-Setup.exe
+            dist/RoboterarmSteuerung
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: macOS Artefakt herunterladen
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-installer
+          path: release-assets
+
+      - name: Windows Artefakt herunterladen
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release-assets
+
+      - name: Release erstellen und Dateien anhaengen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/RoboterarmSteuerung-macOS.dmg
+            release-assets/RoboterarmSteuerung-Setup.exe
