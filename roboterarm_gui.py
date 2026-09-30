@@ -8,11 +8,24 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import itertools
 from typing import Any
 
-from PySide6.QtCore import QPointF, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, QSize, QTimer, Qt
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -27,6 +40,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTabWidget,
     QTextBrowser,
     QTextEdit,
     QVBoxLayout,
@@ -41,12 +57,125 @@ except ImportError:
     list_ports = None
 
 
+THEME = {
+    "primary": "#0d9488",
+    "primary_dark": "#0f766e",
+    "primary_soft": "#ccfbf1",
+    "accent": "#f59e0b",
+    "bg": "#f1f5f9",
+    "card": "#ffffff",
+    "border": "#e2e8f0",
+    "text": "#0f172a",
+    "muted": "#64748b",
+}
+POINT_COLORS = ("#16a34a", "#ef4444", "#3b82f6", "#a855f7", "#f97316", "#0891b2", "#db2777", "#65a30d", "#7c3aed", "#ca8a04", "#0d9488", "#e11d48")
+FONT_FAMILY = "Helvetica Neue" if sys.platform == "darwin" else "Segoe UI"
+
+APP_STYLE = """
+* {{ font-size: 13px; }}
+QMainWindow, QDialog {{ background: {bg}; }}
+QWidget#central {{ background: {bg}; }}
+QWidget {{ color: {text}; }}
+QMenuBar {{ background: {card}; border-bottom: 1px solid {border}; padding: 2px 6px; }}
+QMenuBar::item {{ padding: 5px 10px; border-radius: 6px; background: transparent; }}
+QMenuBar::item:selected {{ background: {primary_soft}; }}
+QMenu {{ background: {card}; border: 1px solid {border}; border-radius: 8px; padding: 4px; }}
+QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {primary_soft}; color: {text}; }}
+
+QFrame#header {{ background: {card}; border: 1px solid {border}; border-radius: 16px; }}
+QLabel#appTitle {{ font-size: 20px; font-weight: 700; color: {text}; }}
+QLabel#appSubtitle {{ color: {muted}; }}
+QLabel#cardTitle {{ font-size: 14px; font-weight: 700; }}
+QLabel#hint {{ color: {muted}; font-size: 12px; }}
+QLabel#status {{ color: {muted}; }}
+
+QGroupBox {{
+    background: {card}; border: 1px solid {border}; border-radius: 14px;
+    margin-top: 22px; padding: 18px 14px 14px 14px; font-weight: 600;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin; subcontrol-position: top left;
+    left: 14px; top: 2px; padding: 0 6px; color: {primary_dark}; font-size: 13px; font-weight: 700;
+}}
+QFrame#waypoint {{ background: #f8fafc; border: 1px solid {border}; border-radius: 10px; }}
+QFrame#waypoint QDoubleSpinBox, QFrame#waypoint QComboBox {{ background: white; }}
+QPushButton#iconButton {{ padding: 0; border-radius: 14px; color: {muted}; }}
+QPushButton#iconButton:hover {{ background: #fee2e2; border-color: #ef4444; color: #b91c1c; }}
+QFrame#card {{ background: {card}; border: 1px solid {border}; border-radius: 14px; }}
+
+QPushButton {{
+    background: {card}; border: 1px solid {border}; border-radius: 10px;
+    padding: 8px 14px; font-weight: 600;
+}}
+QPushButton:hover {{ background: {primary_soft}; border-color: {primary}; }}
+QPushButton:pressed {{ background: #99f6e4; }}
+QPushButton:disabled {{ color: #94a3b8; background: #f8fafc; }}
+QPushButton#primary {{ background: {primary}; border: 1px solid {primary}; color: white; }}
+QPushButton#primary:hover {{ background: {primary_dark}; border-color: {primary_dark}; }}
+QPushButton#primary:disabled {{ background: #99d5cf; border-color: #99d5cf; color: white; }}
+
+QDoubleSpinBox, QComboBox, QLineEdit {{
+    background: #f8fafc; border: 1px solid {border}; border-radius: 8px;
+    padding: 5px 8px; min-height: 20px; selection-background-color: {primary};
+}}
+QDoubleSpinBox:focus, QComboBox:focus {{ border: 1px solid {primary}; background: white; }}
+QComboBox QAbstractItemView {{
+    background: {card}; border: 1px solid {border}; selection-background-color: {primary_soft};
+    selection-color: {text}; outline: 0;
+}}
+QCheckBox {{ spacing: 8px; }}
+QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 5px; border: 1px solid #94a3b8; background: white; }}
+QCheckBox::indicator:checked {{ background: {primary}; border-color: {primary}; }}
+
+QTextEdit, QTextBrowser {{
+    background: {card}; border: none; border-radius: 8px; selection-background-color: {primary_soft};
+    selection-color: {text};
+}}
+QTabWidget::pane {{ border: none; top: 4px; }}
+QTabBar::tab {{
+    background: transparent; padding: 7px 16px; margin-right: 4px; border-radius: 8px;
+    color: {muted}; font-weight: 600;
+}}
+QTabBar::tab:selected {{ background: {primary_soft}; color: {primary_dark}; }}
+QTabBar::tab:hover:!selected {{ background: #f1f5f9; }}
+
+QScrollArea {{ background: transparent; border: none; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: #cbd5e1; border-radius: 4px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: #94a3b8; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
+QScrollBar:horizontal {{ height: 0; }}
+""".format(**THEME)
+
+
+def asset_path(name: str) -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(getattr(sys, "_MEIPASS")) / "assets" / name
+    return Path(__file__).resolve().parent / "assets" / name
+
+
 MOTOR_LAYOUT = (
     (1, "base", "Standachse"),
     (2, "shoulder", "Arm kippen"),
     (3, "wrist", "Handgelenk"),
-    (4, "gripper", "Klammer"),
+    (4, "gripper", "Greifer (Servo)"),
 )
+
+
+GRIPPER_ACTIONS = (
+    ("none", "Keine Aktion", ()),
+    ("close", "Schließen", ("close",)),
+    ("open", "Öffnen", ("open",)),
+    ("open_close", "Öffnen, dann Schließen", ("open", "close")),
+    ("close_open", "Schließen, dann Öffnen", ("close", "open")),
+)
+GRIPPER_ACTION_S = 1.0
+MAX_WAYPOINTS = 12
+
+
+def waypoint_name(index: int) -> str:
+    return chr(ord("A") + index)
 
 
 @dataclass
@@ -54,6 +183,15 @@ class RobotConfig:
     base_height: float
     link_1: float
     link_2: float
+    servo_open_deg: float = 90.0
+    servo_closed_deg: float = 30.0
+
+    def gripper_fraction(self, servo_deg: float) -> float:
+        """0.0 = Greifer geschlossen, 1.0 = Greifer offen (fuer die Darstellung)."""
+        span = self.servo_open_deg - self.servo_closed_deg
+        if abs(span) < 1e-6:
+            return 1.0
+        return clamp((servo_deg - self.servo_closed_deg) / span, 0.0, 1.0)
 
 
 @dataclass
@@ -61,7 +199,7 @@ class TargetPoint:
     x: float
     y: float
     z: float
-    gripper: float
+    action: str = "none"
 
 
 @dataclass
@@ -70,6 +208,14 @@ class JointState:
     shoulder_deg: float
     wrist_deg: float
     gripper_deg: float
+
+
+@dataclass
+class Keyframe:
+    label: str
+    point_index: int
+    kind: str  # "move" oder "gripper"
+    state: "JointState"
 
 
 @dataclass
@@ -129,7 +275,7 @@ def solve_inverse_kinematics(target: TargetPoint, config: RobotConfig, elbow_up:
         base_deg=math.degrees(base_angle),
         shoulder_deg=math.degrees(shoulder_angle),
         wrist_deg=math.degrees(wrist_angle),
-        gripper_deg=target.gripper,
+        gripper_deg=config.servo_open_deg,
     )
 
 
@@ -197,43 +343,76 @@ def min_middle_joint_heights_on_path(
     return min_shoulder, min_elbow
 
 
-def solve_safe_motion_pair(
-    start_target: TargetPoint,
-    end_target: TargetPoint,
+def solve_safe_path(
+    targets: list[TargetPoint],
     config: RobotConfig,
     preferred_elbow_up: bool,
     min_middle_joint_z: float = 0.0,
-) -> tuple[JointState, JointState, bool, bool, float, float]:
-    preferred = [preferred_elbow_up, not preferred_elbow_up]
+) -> tuple[list[JointState], list[bool], float, float]:
+    """Waehlt fuer jeden Punkt eine IK-Loesung, so dass die ganze Bahn sicher ist.
 
-    candidates: list[tuple[JointState, JointState, bool, bool, float, float]] = []
-    for start_elbow_up in preferred:
-        for end_elbow_up in preferred:
+    Rueckgabe: Zustaende, Ellbogen-Flags, minimale Schulter- und Ellbogenhoehe entlang der Bahn.
+    """
+    options: list[list[tuple[bool, JointState]]] = []
+    for index, target in enumerate(targets):
+        point_options = []
+        for elbow_up in (preferred_elbow_up, not preferred_elbow_up):
             try:
-                start_state = solve_inverse_kinematics(start_target, config, start_elbow_up)
-                end_state = solve_inverse_kinematics(end_target, config, end_elbow_up)
-            except InverseKinematicsError:
-                continue
+                point_options.append((elbow_up, solve_inverse_kinematics(target, config, elbow_up)))
+            except InverseKinematicsError as exc:
+                last_error = exc
+        if not point_options:
+            raise InverseKinematicsError(f"Punkt {waypoint_name(index)}: {last_error}")
+        options.append(point_options)
 
-            min_shoulder, min_elbow = min_middle_joint_heights_on_path(start_state, end_state, config)
-            candidates.append((start_state, end_state, start_elbow_up, end_elbow_up, min_shoulder, min_elbow))
+    edge_cache: dict[tuple[int, int, int], tuple[float, float]] = {}
 
-    safe_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate[4] >= min_middle_joint_z and candidate[5] >= min_middle_joint_z
-    ]
-    if safe_candidates:
-        return safe_candidates[0]
+    def edge(index: int, a: int, b: int) -> tuple[float, float]:
+        key = (index, a, b)
+        if key not in edge_cache:
+            edge_cache[key] = min_middle_joint_heights_on_path(options[index][a][1], options[index + 1][b][1], config)
+        return edge_cache[key]
 
-    if candidates:
-        best = max(candidates, key=lambda item: min(item[4], item[5]))
-        raise InverseKinematicsError(
-            "Keine sichere Bahn gefunden: Mindestens ein mittleres Gelenk unterschreitet den Sicherheitsabstand. "
-            f"Beste gefundene Mindesthoehen: Schulter z={best[4]:.2f} cm, Ellbogen z={best[5]:.2f} cm."
-        )
+    candidates = []
+    for combo in itertools.product(*[range(len(point_options)) for point_options in options]):
+        min_shoulder = float("inf")
+        min_elbow = float("inf")
+        for index in range(len(combo) - 1):
+            shoulder_z, elbow_z = edge(index, combo[index], combo[index + 1])
+            min_shoulder = min(min_shoulder, shoulder_z)
+            min_elbow = min(min_elbow, elbow_z)
+        if len(combo) == 1:
+            min_shoulder, min_elbow = middle_joint_heights(options[0][combo[0]][1], config)
+        flags = [options[i][k][0] for i, k in enumerate(combo)]
+        cost = sum(1 for flag in flags if flag != preferred_elbow_up)
+        candidates.append((cost, flags, [options[i][k][1] for i, k in enumerate(combo)], min_shoulder, min_elbow))
 
-    raise InverseKinematicsError("Es konnte keine gueltige IK-Kombination fuer Start/Ziel gefunden werden.")
+    safe = [c for c in candidates if c[3] >= min_middle_joint_z and c[4] >= min_middle_joint_z]
+    if safe:
+        _, flags, states, min_shoulder, min_elbow = min(safe, key=lambda item: item[0])
+        return states, flags, min_shoulder, min_elbow
+
+    best = max(candidates, key=lambda item: min(item[3], item[4]))
+    raise InverseKinematicsError(
+        "Keine sichere Bahn gefunden: Mindestens ein mittleres Gelenk unterschreitet den Sicherheitsabstand. "
+        f"Beste gefundene Mindesthoehen: Schulter z={best[3]:.2f} cm, Ellbogen z={best[4]:.2f} cm."
+    )
+
+
+def build_keyframes(targets: list[TargetPoint], states: list[JointState], config: RobotConfig) -> list[Keyframe]:
+    """Erzeugt die Schrittfolge: Anfahren jedes Punktes plus Greiferaktionen am Punkt."""
+    frames: list[Keyframe] = []
+    gripper = config.servo_open_deg
+    action_labels = {"open": "Öffnen", "close": "Schließen"}
+    action_angles = {"open": config.servo_open_deg, "close": config.servo_closed_deg}
+    for index, (target, state) in enumerate(zip(targets, states)):
+        name = waypoint_name(index)
+        frames.append(Keyframe(name, index, "move", replace(state, gripper_deg=gripper)))
+        steps = next((steps for key, _, steps in GRIPPER_ACTIONS if key == target.action), ())
+        for step in steps:
+            gripper = action_angles[step]
+            frames.append(Keyframe(f"{name} · {action_labels[step]}", index, "gripper", replace(state, gripper_deg=gripper)))
+    return frames
 
 
 def build_motor_commands(state: JointState, duration_s: float) -> list[MotorCommand]:
@@ -260,7 +439,6 @@ def build_serial_payload(profile: str, target: TargetPoint, state: JointState, d
             "x": round(target.x, 2),
             "y": round(target.y, 2),
             "z": round(target.z, 2),
-            "gripper": round(target.gripper, 2),
         },
         "motors": [
             {
@@ -335,198 +513,51 @@ class ArmViewBase(QWidget):
         super().__init__()
         self.config: RobotConfig | None = None
         self.state: JointState | None = None
-        self.start_target: TargetPoint | None = None
-        self.end_target: TargetPoint | None = None
+        self.targets: list[TargetPoint] = []
 
     def set_scene(
         self,
         config: RobotConfig | None,
         state: JointState | None,
-        start_target: TargetPoint | None,
-        end_target: TargetPoint | None,
+        targets: list[TargetPoint],
     ) -> None:
         self.config = config
         self.state = state
-        self.start_target = start_target
-        self.end_target = end_target
+        self.targets = targets
         self.update()
 
 
-class SideViewWidget(ArmViewBase):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setMinimumHeight(320)
-
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#fffef7"))
-
-        if self.config is None or self.state is None:
-            painter.setPen(QColor("#4b5563"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Noch keine Berechnung vorhanden")
-            return
-
-        config = self.config
-        state = self.state
-        points = forward_kinematics(state, config)
-        width = self.width()
-        height = self.height()
-        padding = 28
-        total_length = config.link_1 + config.link_2 + config.base_height + 10
-        scale = min((width - 2 * padding) / max(total_length, 1), (height - 2 * padding) / max(total_length, 1))
-        origin_x = padding
-        origin_y = height - padding
-
-        def project(point: tuple[float, float, float]) -> QPointF:
-            x, y, z = point
-            radial = math.hypot(x, y)
-            return QPointF(origin_x + radial * scale, origin_y - z * scale)
-
-        painter.setPen(QPen(QColor("#8f8f8f"), 2))
-        painter.drawLine(origin_x, origin_y, width - padding, origin_y)
-        painter.drawLine(origin_x, origin_y, origin_x, padding)
-        painter.setPen(QColor("#555555"))
-        painter.drawText(width - padding - 18, origin_y - 10, "r")
-        painter.drawText(origin_x + 8, padding + 14, "z")
-
-        for target, color in ((self.start_target, QColor("#2f7d32")), (self.end_target, QColor("#b84a3a"))):
-            if target is None:
-                continue
-            marker = project((target.x, target.y, target.z))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(marker, 5, 5)
-
-        base = project(points["base"])
-        shoulder = project(points["shoulder"])
-        elbow = project(points["elbow"])
-        tool = project(points["tool"])
-
-        painter.setPen(QPen(QColor("#2d4059"), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(base, shoulder)
-        painter.setPen(QPen(QColor("#ea5455"), 10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(shoulder, elbow)
-        painter.setPen(QPen(QColor("#f07b3f"), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(elbow, tool)
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#233142"))
-        for point in (base, shoulder, elbow, tool):
-            painter.drawEllipse(point, 5, 5)
-
-        self._draw_gripper(painter, tool, math.radians(state.shoulder_deg + state.wrist_deg), state.gripper_deg, scale)
-        painter.setPen(QColor("#111827"))
-        painter.setFont(QFont("Helvetica", 11, QFont.Weight.Bold))
-        painter.drawText(
-            0,
-            18,
-            width,
-            20,
-            Qt.AlignmentFlag.AlignCenter,
-            (
-                f"Motor 1: {state.base_deg:6.1f}°    "
-                f"Motor 2: {state.shoulder_deg:6.1f}°    "
-                f"Motor 3: {state.wrist_deg:6.1f}°    "
-                f"Motor 4: {state.gripper_deg:6.1f}°"
-            ),
-        )
-
-    def _draw_gripper(self, painter: QPainter, tool: QPointF, tool_angle: float, opening_deg: float, scale: float) -> None:
-        jaw_length = 8 + scale * 0.8
-        base_length = 10
-        opening_rad = math.radians(opening_deg / 2)
-        back = QPointF(tool.x() - math.cos(tool_angle) * base_length, tool.y() + math.sin(tool_angle) * base_length)
-
-        painter.setPen(QPen(QColor("#364f6b"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(back, tool)
-        painter.setPen(QPen(QColor("#364f6b"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        for offset in (-opening_rad, opening_rad):
-            angle = tool_angle + offset
-            end_point = QPointF(tool.x() + math.cos(angle) * jaw_length, tool.y() - math.sin(angle) * jaw_length)
-            painter.drawLine(tool, end_point)
-
-
-class TopViewWidget(ArmViewBase):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setMinimumHeight(260)
-
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#f4f7fb"))
-
-        if self.config is None or self.state is None:
-            painter.setPen(QColor("#4b5563"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Draufsicht")
-            return
-
-        config = self.config
-        points = forward_kinematics(self.state, config)
-        width = self.width()
-        height = self.height()
-        padding = 24
-        max_radius = config.link_1 + config.link_2 + 10
-        scale = min((width / 2 - padding) / max(max_radius, 1), (height / 2 - padding) / max(max_radius, 1))
-        center_x = width / 2
-        center_y = height / 2
-
-        def project(point: tuple[float, float, float]) -> QPointF:
-            x, y, _ = point
-            return QPointF(center_x + x * scale, center_y - y * scale)
-
-        painter.setPen(QPen(QColor("#9ca3af"), 1.5))
-        painter.drawLine(padding, center_y, width - padding, center_y)
-        painter.drawLine(center_x, padding, center_x, height - padding)
-        painter.setPen(QColor("#555555"))
-        painter.drawText(width - padding - 10, int(center_y - 10), "x")
-        painter.drawText(int(center_x + 10), padding + 14, "y")
-        painter.setPen(QPen(QColor("#d6dbe4"), 1.5))
-        radius = (config.link_1 + config.link_2) * scale
-        painter.drawEllipse(QPointF(center_x, center_y), radius, radius)
-
-        for target, color in ((self.start_target, QColor("#2f7d32")), (self.end_target, QColor("#b84a3a"))):
-            if target is None:
-                continue
-            marker = project((target.x, target.y, target.z))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(marker, 5, 5)
-
-        shoulder = project(points["shoulder"])
-        elbow = project(points["elbow"])
-        tool = project(points["tool"])
-        painter.setPen(QPen(QColor("#ea5455"), 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(shoulder, elbow)
-        painter.setPen(QPen(QColor("#f07b3f"), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(elbow, tool)
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#233142"))
-        for point in (shoulder, elbow, tool):
-            painter.drawEllipse(point, 5, 5)
-
-        painter.setPen(QColor("#111827"))
-        painter.setFont(QFont("Helvetica", 11, QFont.Weight.Bold))
-        painter.drawText(0, 10, width, 20, Qt.AlignmentFlag.AlignCenter, "Draufsicht")
+def shade(color: QColor, light: float) -> QColor:
+    """Hellt eine Farbe auf (light > 0) oder dunkelt sie ab (light < 0); light liegt in [-1, 1]."""
+    if light >= 0:
+        return color.lighter(100 + int(60 * light))
+    return color.darker(100 + int(-70 * light))
 
 
 class ThreeDViewWidget(ArmViewBase):
+    LINK_1_COLOR = QColor(THEME["primary"])
+    LINK_2_COLOR = QColor("#2dd4bf")
+    BASE_COLOR = QColor("#475569")
+    JOINT_COLOR = QColor(THEME["accent"])
+    LIGHT_ANGLE = math.radians(-50)
+
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumHeight(320)
+        self.setMinimumSize(520, 380)
         # Isometrische Ansicht: 45 Grad um z, danach ca. 35.264 Grad um x.
         self.iso_yaw = math.radians(45)
         self.iso_pitch = math.atan(math.sqrt(2) / 2)
         self.yaw = self.iso_yaw
         self.pitch = self.iso_pitch
+        self.zoom = 1.0
         self.is_isometric = True
         self._drag_active = False
-        self._last_mouse_x = 0
-        self._last_mouse_y = 0
+        self._last_mouse_x = 0.0
+        self._last_mouse_y = 0.0
+        self._scale = 1.0
+        self._center = QPointF(0, 0)
+
+    # --- Kamera ---------------------------------------------------------
 
     def set_view_mode(self, mode: str) -> None:
         self.is_isometric = mode == "isometric"
@@ -538,77 +569,8 @@ class ThreeDViewWidget(ArmViewBase):
     def reset_camera(self) -> None:
         self.yaw = self.iso_yaw
         self.pitch = self.iso_pitch
+        self.zoom = 1.0
         self.update()
-
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#f8f8fd"))
-
-        if self.config is None or self.state is None:
-            painter.setPen(QColor("#4b5563"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._title_text())
-            return
-
-        config = self.config
-        points = forward_kinematics(self.state, config)
-        width = self.width()
-        height = self.height()
-        padding = 28
-        max_extent = config.link_1 + config.link_2 + config.base_height + 12
-        scale = min((width - 2 * padding) / max(2 * max_extent, 1), (height - 2 * padding) / max(1.6 * max_extent, 1))
-        center_x = width / 2
-        center_y = height / 2 + 35
-
-        def project(point: tuple[float, float, float]) -> tuple[QPointF, float]:
-            x, y, z = point
-            x1 = x * math.cos(self.yaw) - y * math.sin(self.yaw)
-            y1 = x * math.sin(self.yaw) + y * math.cos(self.yaw)
-            y2 = y1 * math.cos(self.pitch) - z * math.sin(self.pitch)
-            depth = y1 * math.sin(self.pitch) + z * math.cos(self.pitch)
-            return QPointF(center_x + x1 * scale, center_y + y2 * scale), depth
-
-        self._draw_grid(painter, scale, center_x, center_y, max_extent)
-
-        projected = {name: project(point) for name, point in points.items()}
-        segments = [
-            (points["base"], points["shoulder"], QColor("#2d4059"), 8),
-            (points["shoulder"], points["elbow"], QColor("#ea5455"), 10),
-            (points["elbow"], points["tool"], QColor("#f07b3f"), 9),
-        ]
-        ordered_segments = sorted(segments, key=lambda item: (project(item[0])[1] + project(item[1])[1]) / 2)
-        for start, end, color, width_px in ordered_segments:
-            start_point, _ = project(start)
-            end_point, _ = project(end)
-            painter.setPen(QPen(color, width_px, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawLine(start_point, end_point)
-
-        for target, color, label in (
-            (self.start_target, QColor("#2f7d32"), "A"),
-            (self.end_target, QColor("#b84a3a"), "B"),
-        ):
-            if target is None:
-                continue
-            marker, _ = project((target.x, target.y, target.z))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(marker, 5, 5)
-            painter.setPen(color.darker(130))
-            painter.setFont(QFont("Helvetica", 10, QFont.Weight.Bold))
-            painter.drawText(marker + QPointF(8, -6), label)
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#233142"))
-        for name in ("base", "shoulder", "elbow", "tool"):
-            point, _ = projected[name]
-            painter.drawEllipse(point, 5, 5)
-
-        tool_angle = math.radians(self.state.shoulder_deg + self.state.wrist_deg)
-        self._draw_gripper_3d(painter, points["tool"], math.radians(self.state.base_deg), tool_angle, self.state.gripper_deg, project)
-        painter.setPen(QColor("#111827"))
-        painter.setFont(QFont("Helvetica", 11, QFont.Weight.Bold))
-        painter.drawText(0, 12, width, 20, Qt.AlignmentFlag.AlignCenter, self._title_text())
 
     def mousePressEvent(self, event) -> None:
         if self.is_isometric:
@@ -639,107 +601,329 @@ class ThreeDViewWidget(ArmViewBase):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_active = False
 
-    def _title_text(self) -> str:
-        if self.is_isometric:
-            return "3D-Ansicht (isometrisch)"
-        return "3D-Ansicht (frei, Maus ziehen)"
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().y()
+        if delta:
+            self.zoom = clamp(self.zoom * (1.0 + delta / 1200.0), 0.5, 3.0)
+            self.update()
 
-    def _draw_grid(self, painter: QPainter, scale: float, center_x: float, center_y: float, max_extent: float) -> None:
-        painter.setPen(QPen(QColor("#e2e8f0"), 1))
-        step = 10
-        for value in range(-int(max_extent), int(max_extent) + 1, step):
-            start_a, _ = self._project_helper((-max_extent, value, 0.0), scale, center_x, center_y)
-            end_a, _ = self._project_helper((max_extent, value, 0.0), scale, center_x, center_y)
-            start_b, _ = self._project_helper((value, -max_extent, 0.0), scale, center_x, center_y)
-            end_b, _ = self._project_helper((value, max_extent, 0.0), scale, center_x, center_y)
-            painter.drawLine(start_a, end_a)
-            painter.drawLine(start_b, end_b)
+    # --- Projektion -----------------------------------------------------
 
-        for axis_end, color, label in (
-            ((18.0, 0.0, 0.0), QColor("#2563eb"), "x"),
-            ((0.0, 18.0, 0.0), QColor("#16a34a"), "y"),
-            ((0.0, 0.0, 18.0), QColor("#dc2626"), "z"),
-        ):
-            start, _ = self._project_helper((0.0, 0.0, 0.0), scale, center_x, center_y)
-            end, _ = self._project_helper(axis_end, scale, center_x, center_y)
-            painter.setPen(QPen(color, 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawLine(start, end)
-            painter.setPen(color)
-            painter.drawText(end + QPointF(4, -4), label)
-
-    def _project_helper(self, point: tuple[float, float, float], scale: float, center_x: float, center_y: float) -> tuple[QPointF, float]:
+    def _project(self, point: tuple[float, float, float]) -> tuple[QPointF, float]:
         x, y, z = point
         x1 = x * math.cos(self.yaw) - y * math.sin(self.yaw)
         y1 = x * math.sin(self.yaw) + y * math.cos(self.yaw)
         y2 = y1 * math.cos(self.pitch) - z * math.sin(self.pitch)
         depth = y1 * math.sin(self.pitch) + z * math.cos(self.pitch)
-        return QPointF(center_x + x1 * scale, center_y + y2 * scale), depth
+        return QPointF(self._center.x() + x1 * self._scale, self._center.y() + y2 * self._scale), depth
 
-    def _draw_gripper_3d(
+    def _screen(self, point: tuple[float, float, float]) -> QPointF:
+        return self._project(point)[0]
+
+    # --- Zeichnen -------------------------------------------------------
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        card = QPainterPath()
+        card.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        painter.setClipPath(card)
+        background = QLinearGradient(0, 0, 0, self.height())
+        background.setColorAt(0.0, QColor("#f8fafc"))
+        background.setColorAt(1.0, QColor("#e2e8f0"))
+        painter.fillRect(self.rect(), QBrush(background))
+
+        if self.config is None or self.state is None:
+            painter.setPen(QColor(THEME["muted"]))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Noch keine Berechnung vorhanden")
+            return
+
+        config = self.config
+        state = self.state
+        points = forward_kinematics(state, config)
+        width = self.width()
+        height = self.height()
+        padding = 30
+        reach = config.link_1 + config.link_2
+        floor_radius = reach + 4
+        fit = min(
+            (width - 2 * padding) / (2 * floor_radius),
+            (height - 2 * padding) / (1.9 * floor_radius),
+        )
+        self._scale = fit * self.zoom
+        self._center = QPointF(width / 2, height * 0.6)
+
+        self._draw_floor(painter, floor_radius)
+        self._draw_shadow(painter, points)
+        self._draw_targets(painter)
+        self._draw_pedestal(painter, config)
+
+        base_angle = math.radians(state.base_deg)
+        tool_angle = math.radians(state.shoulder_deg + state.wrist_deg)
+        shoulder, elbow, tool = points["shoulder"], points["elbow"], points["tool"]
+
+        items: list[tuple[float, Any]] = []
+
+        def add_link(a, b, r_a, r_b, color, bias=0.0) -> None:
+            depth = (self._project(a)[1] + self._project(b)[1]) / 2 + bias
+            items.append((depth, lambda a=a, b=b, r_a=r_a, r_b=r_b, color=color: self._draw_link(painter, a, b, r_a, r_b, color)))
+
+        def add_joint(point, radius, color, bias=0.0) -> None:
+            items.append((self._project(point)[1] + bias, lambda: self._draw_sphere(painter, point, radius, color)))
+
+        add_link(shoulder, elbow, 2.2, 1.8, self.LINK_1_COLOR)
+        add_link(elbow, tool, 1.8, 1.4, self.LINK_2_COLOR)
+        add_joint(shoulder, 3.0, self.JOINT_COLOR, 0.5)
+        add_joint(elbow, 2.6, self.JOINT_COLOR, 0.5)
+        add_joint(tool, 1.9, self.JOINT_COLOR, 0.5)
+        items.append(
+            (
+                self._project(tool)[1] + 0.8,
+                lambda: self._draw_gripper(painter, tool, base_angle, tool_angle, 55.0 * config.gripper_fraction(state.gripper_deg)),
+            )
+        )
+
+        for _, draw in sorted(items, key=lambda item: item[0]):
+            draw()
+
+        self._draw_overlay(painter, state)
+        painter.setClipping(False)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(THEME["border"]), 1))
+        painter.drawPath(card)
+
+    def _draw_floor(self, painter: QPainter, radius: float) -> None:
+        def ring(r: float) -> QPolygonF:
+            return QPolygonF(
+                [self._screen((r * math.cos(t * math.pi / 45), r * math.sin(t * math.pi / 45), 0.0)) for t in range(90)]
+            )
+
+        painter.setPen(QPen(QColor("#cbd5e1"), 1.4))
+        painter.setBrush(QColor(255, 255, 255, 215))
+        painter.drawPolygon(ring(radius))
+
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#e2e8f0"), 1))
+        r = 10.0
+        while r < radius - 0.5:
+            painter.drawPolygon(ring(r))
+            r += 10.0
+        painter.drawLine(self._screen((-radius, 0, 0)), self._screen((radius, 0, 0)))
+        painter.drawLine(self._screen((0, -radius, 0)), self._screen((0, radius, 0)))
+
+        painter.setFont(QFont(FONT_FAMILY, 9, QFont.Weight.DemiBold))
+        for axis_end, color, label in (
+            ((16.0, 0.0, 0.0), QColor("#3b82f6"), "x"),
+            ((0.0, 16.0, 0.0), QColor("#22c55e"), "y"),
+            ((0.0, 0.0, 16.0), QColor("#ef4444"), "z"),
+        ):
+            start = self._screen((0.0, 0.0, 0.0))
+            end = self._screen(axis_end)
+            painter.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawLine(start, end)
+            painter.drawText(end + QPointF(4, -4), label)
+
+    def _draw_shadow(self, painter: QPainter, points: dict[str, tuple[float, float, float]]) -> None:
+        chain = [self._screen((p[0], p[1], 0.0)) for p in (points["shoulder"], points["elbow"], points["tool"])]
+        pen = QPen(QColor(15, 23, 42, 45), max(2.0, 3.2 * self._scale), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolyline(QPolygonF(chain))
+
+    def _draw_targets(self, painter: QPainter) -> None:
+        if not self.targets:
+            return
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(100, 116, 139, 150), 1.4, Qt.PenStyle.DotLine))
+        painter.drawPolyline(QPolygonF([self._screen((t.x, t.y, t.z)) for t in self.targets]))
+
+        for index, target in enumerate(self.targets):
+            color = QColor(POINT_COLORS[index % len(POINT_COLORS)])
+            marker = self._screen((target.x, target.y, target.z))
+            floor = self._screen((target.x, target.y, 0.0))
+            painter.setPen(QPen(color, 1.2, Qt.PenStyle.DashLine))
+            painter.drawLine(marker, floor)
+            painter.setBrush(QColor(color.red(), color.green(), color.blue(), 60))
+            painter.setPen(QPen(color, 1.5))
+            painter.drawEllipse(floor, 7, 3.5)
+            painter.setBrush(color)
+            painter.setPen(QPen(QColor("#ffffff"), 2))
+            painter.drawEllipse(marker, 6, 6)
+            painter.setPen(color.darker(120))
+            painter.setFont(QFont(FONT_FAMILY, 11, QFont.Weight.Bold))
+            painter.drawText(marker + QPointF(10, -8), waypoint_name(index))
+
+    def _draw_pedestal(self, painter: QPainter, config: RobotConfig) -> None:
+        top = max(config.base_height, 3.0)
+        self._draw_cylinder(painter, 0.0, 1.5, 9.0, self.BASE_COLOR.darker(120))
+        self._draw_cylinder(painter, 1.5, top - 2.5, 4.6, self.BASE_COLOR)
+        self._draw_cylinder(painter, top - 2.5, top, 6.0, self.BASE_COLOR.lighter(125))
+
+    def _draw_cylinder(self, painter: QPainter, z_low: float, z_high: float, radius: float, color: QColor) -> None:
+        if z_high <= z_low:
+            return
+        steps = 40
+        faces = []
+        for i in range(steps):
+            a0 = 2 * math.pi * i / steps
+            a1 = 2 * math.pi * (i + 1) / steps
+            quad = [
+                (radius * math.cos(a0), radius * math.sin(a0), z_low),
+                (radius * math.cos(a1), radius * math.sin(a1), z_low),
+                (radius * math.cos(a1), radius * math.sin(a1), z_high),
+                (radius * math.cos(a0), radius * math.sin(a0), z_high),
+            ]
+            mid_angle = (a0 + a1) / 2
+            depth = self._project((radius * math.cos(mid_angle), radius * math.sin(mid_angle), (z_low + z_high) / 2))[1]
+            light = math.cos(mid_angle - self.LIGHT_ANGLE)
+            faces.append((depth, quad, light))
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        for _, quad, light in sorted(faces, key=lambda item: item[0]):
+            painter.setBrush(shade(color, light * 0.6))
+            painter.drawPolygon(QPolygonF([self._screen(p) for p in quad]))
+
+        cap_z = z_high if self.pitch >= 0 else z_low
+        cap = QPolygonF(
+            [
+                self._screen((radius * math.cos(2 * math.pi * i / steps), radius * math.sin(2 * math.pi * i / steps), cap_z))
+                for i in range(steps)
+            ]
+        )
+        painter.setBrush(shade(color, 0.25))
+        painter.drawPolygon(cap)
+
+    def _draw_link(
+        self,
+        painter: QPainter,
+        a: tuple[float, float, float],
+        b: tuple[float, float, float],
+        radius_a: float,
+        radius_b: float,
+        color: QColor,
+    ) -> None:
+        start = self._screen(a)
+        end = self._screen(b)
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 1e-3:
+            return
+        nx, ny = -dy / length, dx / length
+        wa = radius_a * self._scale
+        wb = radius_b * self._scale
+        polygon = QPolygonF(
+            [
+                QPointF(start.x() + nx * wa, start.y() + ny * wa),
+                QPointF(end.x() + nx * wb, end.y() + ny * wb),
+                QPointF(end.x() - nx * wb, end.y() - ny * wb),
+                QPointF(start.x() - nx * wa, start.y() - ny * wa),
+            ]
+        )
+        mid = QPointF((start.x() + end.x()) / 2, (start.y() + end.y()) / 2)
+        wm = (wa + wb) / 2
+        gradient = QLinearGradient(QPointF(mid.x() + nx * wm, mid.y() + ny * wm), QPointF(mid.x() - nx * wm, mid.y() - ny * wm))
+        gradient.setColorAt(0.0, shade(color, -0.45))
+        gradient.setColorAt(0.35, shade(color, 0.35))
+        gradient.setColorAt(1.0, shade(color, -0.35))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(gradient))
+        painter.drawPolygon(polygon)
+        # runde Enden
+        for center, width_px in ((start, wa), (end, wb)):
+            painter.setBrush(shade(color, -0.1))
+            painter.drawEllipse(center, width_px, width_px)
+
+    def _draw_sphere(self, painter: QPainter, point: tuple[float, float, float], radius: float, color: QColor) -> None:
+        center = self._screen(point)
+        r = radius * self._scale
+        gradient = QRadialGradient(center, r, QPointF(center.x() - r * 0.35, center.y() - r * 0.4))
+        gradient.setColorAt(0.0, shade(color, 0.7))
+        gradient.setColorAt(0.6, color)
+        gradient.setColorAt(1.0, shade(color, -0.55))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(gradient))
+        painter.drawEllipse(center, r, r)
+
+    def _draw_gripper(
         self,
         painter: QPainter,
         tool_point: tuple[float, float, float],
         base_angle: float,
         elevation_angle: float,
         opening_deg: float,
-        project,
     ) -> None:
-        length = 4.5
-        reach_vector = (
+        reach = (
             math.cos(elevation_angle) * math.cos(base_angle),
             math.cos(elevation_angle) * math.sin(base_angle),
             math.sin(elevation_angle),
         )
-        left_dir = (
-            -math.sin(base_angle),
-            math.cos(base_angle),
-            0.0,
-        )
-        opening_factor = math.sin(math.radians(opening_deg / 2)) * 2.2
-        endpoints = []
-        for direction in (-1.0, 1.0):
-            end = (
-                tool_point[0] + reach_vector[0] * length + left_dir[0] * opening_factor * direction,
-                tool_point[1] + reach_vector[1] * length + left_dir[1] * opening_factor * direction,
-                tool_point[2] + reach_vector[2] * length,
-            )
-            endpoints.append(end)
+        left = (-math.sin(base_angle), math.cos(base_angle), 0.0)
+        palm_length = 2.4
+        jaw_length = 4.8
+        half_opening = math.radians(opening_deg / 2)
 
-        tool_screen, _ = project(tool_point)
-        painter.setPen(QPen(QColor("#364f6b"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        for end in endpoints:
-            end_screen, _ = project(end)
-            painter.drawLine(tool_screen, end_screen)
+        palm_end = tuple(tool_point[i] + reach[i] * palm_length for i in range(3))
+        self._draw_link(painter, tool_point, palm_end, 1.8, 1.8, QColor("#334155"))
+
+        jaws = []
+        for direction in (-1.0, 1.0):
+            tip = tuple(
+                palm_end[i]
+                + reach[i] * math.cos(half_opening) * jaw_length
+                + left[i] * math.sin(half_opening) * jaw_length * direction
+                for i in range(3)
+            )
+            jaws.append((self._project(tip)[1], tip))
+        for _, tip in sorted(jaws, key=lambda item: item[0]):
+            self._draw_link(painter, palm_end, tip, 0.8, 0.5, self.JOINT_COLOR)
+
+    def _draw_overlay(self, painter: QPainter, state: JointState) -> None:
+        title = "3D-Ansicht · isometrisch" if self.is_isometric else "3D-Ansicht · frei (Maus ziehen, Mausrad = Zoom)"
+        painter.setFont(QFont(FONT_FAMILY, 10, QFont.Weight.DemiBold))
+        painter.setPen(QColor(THEME["muted"]))
+        painter.drawText(16, 14, self.width() - 32, 20, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
+
+        chips = (
+            ("M1", state.base_deg),
+            ("M2", state.shoulder_deg),
+            ("M3", state.wrist_deg),
+            ("Servo", state.gripper_deg),
+        )
+        painter.setFont(QFont(FONT_FAMILY, 10, QFont.Weight.DemiBold))
+        metrics = painter.fontMetrics()
+        x = 16.0
+        y = self.height() - 40.0
+        for name, value in chips:
+            text = f"{name}  {value:7.1f}°"
+            chip_width = metrics.horizontalAdvance(text) + 22
+            rect = QRectF(x, y, chip_width, 26)
+            painter.setPen(QPen(QColor(THEME["border"]), 1))
+            painter.setBrush(QColor(255, 255, 255, 230))
+            painter.drawRoundedRect(rect, 13, 13)
+            painter.setPen(QColor(THEME["text"]))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+            x += chip_width + 8
 
 
 class VisualizerPanel(QFrame):
     def __init__(self) -> None:
         super().__init__()
-        layout = QGridLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(10)
-        self.side_view = SideViewWidget()
         self.three_d_view = ThreeDViewWidget()
-        self.top_view = TopViewWidget()
-        layout.addWidget(self.side_view, 0, 0)
-        layout.addWidget(self.three_d_view, 0, 1)
-        layout.addWidget(self.top_view, 1, 0, 1, 2)
-        layout.setColumnStretch(0, 1)
-        layout.setColumnStretch(1, 1)
-        layout.setRowStretch(0, 3)
-        layout.setRowStretch(1, 2)
+        layout.addWidget(self.three_d_view)
 
     def set_scene(
         self,
         config: RobotConfig | None,
         state: JointState | None,
-        start_target: TargetPoint | None,
-        end_target: TargetPoint | None,
+        targets: list[TargetPoint],
     ) -> None:
-        self.side_view.set_scene(config, state, start_target, end_target)
-        self.three_d_view.set_scene(config, state, start_target, end_target)
-        self.top_view.set_scene(config, state, start_target, end_target)
+        self.three_d_view.set_scene(config, state, targets)
 
     def set_3d_mode(self, mode: str) -> None:
         self.three_d_view.set_view_mode(mode)
@@ -748,123 +932,211 @@ class VisualizerPanel(QFrame):
         self.three_d_view.reset_camera()
 
 
-class MotorInputGrid(QWidget):
-    def __init__(self, title_a: str, title_b: str) -> None:
+class WaypointRow(QFrame):
+    def __init__(self, index: int, x: float, y: float, z: float, action: str, removable: bool) -> None:
         super().__init__()
+        self.setObjectName("waypoint")
+        self.setMinimumHeight(92)
         layout = QGridLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setHorizontalSpacing(8)
-        layout.setVerticalSpacing(8)
+        layout.setVerticalSpacing(6)
 
-        headers = ("Punkt", "x [cm]", "y [cm]", "z [cm]", "Klammer [°]")
-        for column, header in enumerate(headers):
-            label = QLabel(header)
-            label.setStyleSheet("font-weight: 600;")
-            layout.addWidget(label, 0, column)
+        self.badge = QLabel()
+        self.badge.setFixedSize(28, 28)
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.badge, 0, 0)
 
-        self.start_x = self._spinbox(-200, 200, 18)
-        self.start_y = self._spinbox(-200, 200, 8)
-        self.start_z = self._spinbox(-200, 200, 18)
-        self.start_gripper = self._spinbox(0, 90, 8)
-        self.end_x = self._spinbox(-200, 200, 12)
-        self.end_y = self._spinbox(-200, 200, -14)
-        self.end_z = self._spinbox(-200, 200, 20)
-        self.end_gripper = self._spinbox(0, 90, 24)
+        self.x = self._spinbox("x ", x)
+        self.y = self._spinbox("y ", y)
+        self.z = self._spinbox("z ", z)
+        for column, spinbox in enumerate((self.x, self.y, self.z), start=1):
+            layout.addWidget(spinbox, 0, column)
 
-        values = (
-            (title_a, self.start_x, self.start_y, self.start_z, self.start_gripper),
-            (title_b, self.end_x, self.end_y, self.end_z, self.end_gripper),
-        )
-        for row, row_values in enumerate(values, start=1):
-            layout.addWidget(QLabel(row_values[0]), row, 0)
-            for column, widget in enumerate(row_values[1:], start=1):
-                layout.addWidget(widget, row, column)
+        self.remove_button = QPushButton("✕")
+        self.remove_button.setObjectName("iconButton")
+        self.remove_button.setFixedSize(28, 28)
+        self.remove_button.setToolTip("Punkt entfernen")
+        self.remove_button.setVisible(removable)
+        layout.addWidget(self.remove_button, 0, 4)
 
-    def _spinbox(self, lower: float, upper: float, value: float) -> QDoubleSpinBox:
+        self.gripper_label = QLabel("Greifer")
+        self.gripper_label.setObjectName("hint")
+        layout.addWidget(self.gripper_label, 1, 0, 1, 1, Qt.AlignmentFlag.AlignCenter)
+        self.action = QComboBox()
+        layout.addWidget(self.action, 1, 1, 1, 4)
+        self.set_index(index, action)
+
+    def _spinbox(self, prefix: str, value: float) -> QDoubleSpinBox:
         spinbox = QDoubleSpinBox()
-        spinbox.setRange(lower, upper)
+        spinbox.setRange(-200, 200)
         spinbox.setDecimals(1)
         spinbox.setSingleStep(1.0)
+        spinbox.setPrefix(prefix)
         spinbox.setValue(value)
-        spinbox.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.PlusMinus)
+        spinbox.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         return spinbox
 
-    def start_target(self) -> TargetPoint:
-        return TargetPoint(self.start_x.value(), self.start_y.value(), self.start_z.value(), self.start_gripper.value())
+    def set_index(self, index: int, action: str | None = None) -> None:
+        """Beschriftet die Zeile neu; Punkt A startet mit geoeffnetem Greifer."""
+        if action is None:
+            action = self.action.currentData()
+        color = POINT_COLORS[index % len(POINT_COLORS)]
+        self.badge.setText(waypoint_name(index))
+        self.badge.setStyleSheet(
+            f"background: {color}; color: white; border-radius: 14px; font-weight: 700;"
+        )
+        allowed = ("none", "close") if index == 0 else tuple(key for key, _, _ in GRIPPER_ACTIONS)
+        self.action.blockSignals(True)
+        self.action.clear()
+        for key, label, _ in GRIPPER_ACTIONS:
+            if key in allowed:
+                self.action.addItem(label, key)
+        found = self.action.findData(action)
+        self.action.setCurrentIndex(found if found >= 0 else 0)
+        self.action.blockSignals(False)
+        self.action.setToolTip(
+            "Greifer startet geöffnet. Hier kann er geschlossen werden." if index == 0 else "Greiferaktion nach dem Anfahren dieses Punkts"
+        )
 
-    def end_target(self) -> TargetPoint:
-        return TargetPoint(self.end_x.value(), self.end_y.value(), self.end_z.value(), self.end_gripper.value())
+    def target(self) -> TargetPoint:
+        return TargetPoint(self.x.value(), self.y.value(), self.z.value(), str(self.action.currentData()))
+
+
+class WaypointEditor(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[WaypointRow] = []
+        self.rows_layout = QVBoxLayout(self)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.setSpacing(8)
+
+        self.add_button = QPushButton("＋ Punkt hinzufügen")
+        self.add_button.clicked.connect(lambda: self.add_waypoint())
+        self.rows_layout.addWidget(self.add_button)
+
+        self.add_waypoint(18, 8, 18, "close")
+        self.add_waypoint(12, -14, 20, "open")
+
+    def add_waypoint(self, x: float | None = None, y: float | None = None, z: float | None = None, action: str = "none") -> None:
+        if len(self.rows) >= MAX_WAYPOINTS:
+            return
+        if not isinstance(x, (int, float)):
+            last = self.rows[-1] if self.rows else None
+            x, y, z = (last.x.value(), last.y.value(), last.z.value()) if last else (15.0, 0.0, 15.0)
+        index = len(self.rows)
+        row = WaypointRow(index, x, y, z, action, removable=index >= 2)
+        row.remove_button.clicked.connect(lambda _=False, row=row: self.remove_waypoint(row))
+        self.rows.append(row)
+        self.rows_layout.insertWidget(index, row)
+        self._refresh()
+
+    def remove_waypoint(self, row: WaypointRow) -> None:
+        if len(self.rows) <= 2 or row not in self.rows:
+            return
+        self.rows.remove(row)
+        self.rows_layout.removeWidget(row)
+        row.deleteLater()
+        self._refresh()
+
+    def _refresh(self) -> None:
+        for index, row in enumerate(self.rows):
+            row.set_index(index)
+            row.remove_button.setVisible(index >= 2)
+        self.add_button.setEnabled(len(self.rows) < MAX_WAYPOINTS)
+
+    def targets(self) -> list[TargetPoint]:
+        return [row.target() for row in self.rows]
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Roboterarm Steuerung")
-        self.resize(1380, 900)
+        self.setWindowIcon(QIcon(str(asset_path("logo.png"))))
+        self.resize(1400, 900)
 
-        self.start_state: JointState | None = None
-        self.end_state: JointState | None = None
-        self.start_target_value: TargetPoint | None = None
-        self.end_target_value: TargetPoint | None = None
+        self.targets: list[TargetPoint] = []
+        self.states: list[JointState] = []
+        self.keyframes: list[Keyframe] = []
+        self.elbow_flags: list[bool] = []
         self.current_config: RobotConfig | None = None
-        self.start_elbow_up: bool | None = None
-        self.end_elbow_up: bool | None = None
         self.min_path_shoulder_z: float | None = None
         self.min_path_elbow_z: float | None = None
         self.serial_bridge = SerialBridge()
-        self.animation_frames = 0
+        self.animation_states: list[JointState] = []
         self.animation_index = 0
         self.animation_timer = QTimer(self)
         self.animation_timer.setInterval(33)
         self.animation_timer.timeout.connect(self._advance_animation)
 
         central = QWidget()
+        central.setObjectName("central")
         self.setCentralWidget(central)
-        root_layout = QHBoxLayout(central)
-        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(16, 14, 16, 16)
         root_layout.setSpacing(14)
 
-        controls = QWidget()
-        controls.setFixedWidth(440)
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(12)
+        root_layout.addWidget(self._build_header())
 
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        root_layout.addLayout(body, stretch=1)
+
+        # --- linke Spalte: Eingaben -------------------------------------
         geometry_box = QGroupBox("Geometrie")
         geometry_layout = QGridLayout(geometry_box)
+        geometry_layout.setVerticalSpacing(8)
         self.base_height = self._spinbox(0, 200, 12)
         self.link_1 = self._spinbox(1, 200, 20)
         self.link_2 = self._spinbox(1, 200, 18)
         self.duration = self._spinbox(0.5, 20, 3.0, step=0.5)
         self.middle_joint_clearance = self._spinbox(0.0, 50.0, 2.0, step=0.5)
         geometry_labels = (
-            ("Sockelhoehe z0 [cm]", self.base_height),
-            ("Armlaenge 1 [cm]", self.link_1),
-            ("Armlaenge 2 [cm]", self.link_2),
+            ("Sockelhöhe z0 [cm]", self.base_height),
+            ("Armlänge 1 [cm]", self.link_1),
+            ("Armlänge 2 [cm]", self.link_2),
             ("Animationsdauer [s]", self.duration),
             ("Sicherheitsabstand z [cm]", self.middle_joint_clearance),
         )
         for row, (label, widget) in enumerate(geometry_labels):
             geometry_layout.addWidget(QLabel(label), row, 0)
             geometry_layout.addWidget(widget, row, 1)
+        geometry_layout.setColumnStretch(0, 1)
 
-        self.elbow_up = QCheckBox("Alternative IK-Loesung (eingeklappt)")
+        self.elbow_up = QCheckBox("Alternative IK-Lösung (eingeklappt)")
         geometry_layout.addWidget(self.elbow_up, len(geometry_labels), 0, 1, 2)
 
-        positions_box = QGroupBox("Positionen")
+        gripper_box = QGroupBox("Greifer (Servo SG90)")
+        gripper_layout = QGridLayout(gripper_box)
+        gripper_layout.setVerticalSpacing(8)
+        self.servo_open = self._spinbox(0, 180, 90, step=5.0)
+        self.servo_closed = self._spinbox(0, 180, 30, step=5.0)
+        gripper_layout.addWidget(QLabel("Servowinkel offen [°]"), 0, 0)
+        gripper_layout.addWidget(self.servo_open, 0, 1)
+        gripper_layout.addWidget(QLabel("Servowinkel geschlossen [°]"), 1, 0)
+        gripper_layout.addWidget(self.servo_closed, 1, 1)
+        gripper_layout.setColumnStretch(0, 1)
+
+        positions_box = QGroupBox("Punkte (Reihenfolge A, B, C, ...)")
         positions_layout = QVBoxLayout(positions_box)
-        self.inputs = MotorInputGrid("A", "B")
+        self.inputs = WaypointEditor()
         positions_layout.addWidget(self.inputs)
 
         button_box = QWidget()
         button_layout = QVBoxLayout(button_box)
         button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(8)
         self.calculate_button = QPushButton("Winkel berechnen")
+        self.calculate_button.setObjectName("primary")
         self.animate_button = QPushButton("Bewegung animieren")
         self.stop_button = QPushButton("Animation stoppen")
         button_layout.addWidget(self.calculate_button)
-        button_layout.addWidget(self.animate_button)
-        button_layout.addWidget(self.stop_button)
+        secondary_row = QHBoxLayout()
+        secondary_row.setSpacing(8)
+        secondary_row.addWidget(self.animate_button)
+        secondary_row.addWidget(self.stop_button)
+        button_layout.addLayout(secondary_row)
 
         self.port_combo = QComboBox()
         self.baud_combo = QComboBox()
@@ -873,8 +1145,8 @@ class MainWindow(QMainWindow):
         self.refresh_ports_button = QPushButton("Ports suchen")
         self.connect_bridge_button = QPushButton("Verbinden")
         self.disconnect_bridge_button = QPushButton("Trennen")
-        self.send_a_button = QPushButton("Position A senden")
-        self.send_b_button = QPushButton("Position B senden")
+        self.send_step_combo = QComboBox()
+        self.send_step_button = QPushButton("Senden")
         self.firmware_combo = QComboBox()
         self.firmware_combo.addItem("Bridge (MicroPython)", "bridge")
         self.firmware_combo.addItem("Motor-Empfaenger (MicroPython)", "motor")
@@ -887,56 +1159,65 @@ class MainWindow(QMainWindow):
         self.bridge_log.setMinimumHeight(120)
         self.esp_dialog = self._create_esp_dialog()
 
-        result_box = QGroupBox("Ergebnis")
-        result_layout = QVBoxLayout(result_box)
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setFont(QFont("Courier New", 11))
-        self.result_text.setMinimumHeight(260)
-        result_layout.addWidget(self.result_text)
-
+        controls_content = QWidget()
+        controls_content.setObjectName("central")
+        controls_layout = QVBoxLayout(controls_content)
+        controls_layout.setContentsMargins(0, 0, 6, 0)
+        controls_layout.setSpacing(10)
         controls_layout.addWidget(geometry_box)
+        controls_layout.addWidget(gripper_box)
         controls_layout.addWidget(positions_box)
         controls_layout.addWidget(button_box)
-        controls_layout.addWidget(result_box, stretch=1)
+        controls_layout.addStretch(1)
 
+        controls = QScrollArea()
+        controls.setWidgetResizable(True)
+        controls.setFrameShape(QFrame.Shape.NoFrame)
+        controls.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls.setFixedWidth(500)
+        controls.setWidget(controls_content)
+
+        # --- rechte Spalte: 3D-Ansicht + Ergebnis -------------------------
         visuals = QWidget()
         visuals_layout = QVBoxLayout(visuals)
         visuals_layout.setContentsMargins(0, 0, 0, 0)
         visuals_layout.setSpacing(12)
 
-        info_box = QGroupBox("Annahmen")
-        info_layout = QVBoxLayout(info_box)
-        info_label = QLabel(
-            "Der Roboter wird als 2-gliedriger Arm mit drehbarer Basis modelliert. "
-            "Motor 1 dreht um die Standachse, Motor 2 kippt das erste Segment, "
-            "Motor 3 kippt das zweite Segment relativ zum ersten, Motor 4 steuert die Klammer. "
-            "Ein angeschlossener ESP32 kann die berechneten Zielwinkel seriell empfangen und per ESP-NOW an die Motor-Controller weiterleiten."
-        )
-        info_label.setWordWrap(True)
-        info_layout.addWidget(info_label)
-
         view_controls = QHBoxLayout()
-        view_controls.addWidget(QLabel("3D-Modus:"))
+        view_title = QLabel("3D-Ansicht")
+        view_title.setObjectName("cardTitle")
+        view_controls.addWidget(view_title)
+        view_controls.addStretch(1)
         self.view_mode_combo = QComboBox()
         self.view_mode_combo.addItem("Isometrisch", "isometric")
         self.view_mode_combo.addItem("Frei (Maus)", "free")
         self.reset_view_button = QPushButton("Kamera zurücksetzen")
         view_controls.addWidget(self.view_mode_combo)
         view_controls.addWidget(self.reset_view_button)
-        view_controls.addStretch(1)
-        info_layout.addLayout(view_controls)
-
-        view_hint = QLabel("Im Modus 'Frei (Maus)' mit linker Maustaste in der 3D-Ansicht ziehen.")
-        view_hint.setStyleSheet("color: #4b5563;")
-        info_layout.addWidget(view_hint)
 
         self.visualizer = VisualizerPanel()
-        visuals_layout.addWidget(info_box)
-        visuals_layout.addWidget(self.visualizer, stretch=1)
 
-        root_layout.addWidget(controls)
-        root_layout.addWidget(visuals, stretch=1)
+        result_box = QGroupBox("Ergebnis")
+        result_layout = QVBoxLayout(result_box)
+        result_layout.setContentsMargins(10, 14, 10, 10)
+        self.result_tabs = QTabWidget()
+        self.result_summary = QTextBrowser()
+        self.result_summary.setOpenLinks(False)
+        self.result_text = QTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setFont(QFont("Courier New", 11))
+        self.result_tabs.addTab(self.result_summary, "Winkel")
+        self.result_tabs.addTab(self.result_text, "Details und Pakete")
+        result_box.setMinimumHeight(290)
+        result_layout.addWidget(self.result_tabs)
+        self.result_summary.setHtml(self._empty_summary_html())
+
+        visuals_layout.addLayout(view_controls)
+        visuals_layout.addWidget(self.visualizer, stretch=3)
+        visuals_layout.addWidget(result_box, stretch=2)
+
+        body.addWidget(controls)
+        body.addWidget(visuals, stretch=1)
 
         self._create_menu()
 
@@ -946,8 +1227,7 @@ class MainWindow(QMainWindow):
         self.refresh_ports_button.clicked.connect(self.refresh_serial_ports)
         self.connect_bridge_button.clicked.connect(self.connect_bridge)
         self.disconnect_bridge_button.clicked.connect(self.disconnect_bridge)
-        self.send_a_button.clicked.connect(lambda: self.send_position_to_bridge("A"))
-        self.send_b_button.clicked.connect(lambda: self.send_position_to_bridge("B"))
+        self.send_step_button.clicked.connect(self.send_selected_step)
         self.deploy_firmware_button.clicked.connect(self.deploy_selected_firmware)
         self.firmware_combo.currentIndexChanged.connect(self._update_firmware_ui)
         self.view_mode_combo.currentIndexChanged.connect(self._change_3d_mode)
@@ -958,8 +1238,93 @@ class MainWindow(QMainWindow):
         self._update_bridge_controls()
         self.visualizer.set_3d_mode("isometric")
         initial_config = self.get_config()
-        initial_state = JointState(0.0, 20.0, 45.0, 10.0)
-        self.visualizer.set_scene(initial_config, initial_state, None, None)
+        initial_state = JointState(0.0, 20.0, 45.0, initial_config.servo_open_deg)
+        self.visualizer.set_scene(initial_config, initial_state, [])
+
+    def _build_header(self) -> QFrame:
+        header = QFrame()
+        header.setObjectName("header")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(14)
+
+        logo = QLabel()
+        pixmap = QPixmap(str(asset_path("logo.png")))
+        if not pixmap.isNull():
+            logo.setPixmap(pixmap.scaled(QSize(48, 48), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        layout.addWidget(logo)
+
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        title = QLabel("Roboterarm Steuerung")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("Winkelberechnung und Ansteuerung per ESP32")
+        subtitle.setObjectName("appSubtitle")
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+        layout.addLayout(titles)
+        layout.addStretch(1)
+
+        esp_button = QPushButton("ESP32-Kommunikation")
+        esp_button.clicked.connect(self.open_esp_dialog)
+        layout.addWidget(esp_button)
+        return header
+
+    def _empty_summary_html(self) -> str:
+        return (
+            f'<p style="color:{THEME["muted"]}; font-size:14px; margin:18px;">'
+            "Noch keine Berechnung. Positionen eintragen und auf <b>Winkel berechnen</b> klicken."
+            "</p>"
+        )
+
+    def _build_summary_html(self) -> str:
+        if not self.keyframes or self.current_config is None:
+            return self._empty_summary_html()
+
+        config = self.current_config
+        th = (
+            f'style="background:{THEME["primary_soft"]}; color:{THEME["primary_dark"]}; '
+            'padding:6px 10px; font-size:12px;"'
+        )
+        td = f'style="padding:6px 10px; border-bottom:1px solid {THEME["border"]}; font-size:14px;"'
+        html = [
+            '<table width="100%" cellspacing="0" cellpadding="0">',
+            f'<tr><th align="left" {th}>Schritt</th>'
+            f'<th align="right" {th}>M1 Standachse</th>'
+            f'<th align="right" {th}>M2 Arm</th>'
+            f'<th align="right" {th}>M3 Handgelenk</th>'
+            f'<th align="right" {th}>Servo Greifer</th></tr>',
+        ]
+        for frame in self.keyframes:
+            state = frame.state
+            is_action = frame.kind == "gripper"
+            weight = "font-weight:400;" if is_action else "font-weight:700;"
+            row_bg = ' bgcolor="#f8fafc"' if is_action else ""
+            fraction = config.gripper_fraction(state.gripper_deg)
+            gripper_note = "offen" if fraction > 0.5 else "geschlossen"
+            html.append(
+                f'<tr{row_bg}><td {td}><span style="{weight}">{frame.label}</span></td>'
+                f'<td align="right" {td}>{state.base_deg:.1f}°</td>'
+                f'<td align="right" {td}>{state.shoulder_deg:.1f}°</td>'
+                f'<td align="right" {td}>{state.wrist_deg:.1f}°</td>'
+                f'<td align="right" {td}><b>{state.gripper_deg:.0f}°</b> '
+                f'<span style="color:{THEME["muted"]}; font-size:12px;">{gripper_note}</span></td></tr>'
+            )
+        html.append("</table>")
+
+        shoulder_z = "unbekannt" if self.min_path_shoulder_z is None else f"{self.min_path_shoulder_z:.1f} cm"
+        elbow_z = "unbekannt" if self.min_path_elbow_z is None else f"{self.min_path_elbow_z:.1f} cm"
+        points = " &nbsp;·&nbsp; ".join(
+            f"{waypoint_name(i)}: ({t.x:.1f} | {t.y:.1f} | {t.z:.1f}) {'eingeklappt' if self.elbow_flags[i] else 'ausgeklappt'}"
+            for i, t in enumerate(self.targets)
+        )
+        html.append(
+            f'<p style="color:{THEME["muted"]}; font-size:12px;">M1–M3: Schrittmotoren (Winkel in Grad), '
+            f'Servo: SG90 (0–180°).<br>{points}<br>'
+            f'Mindesthöhe entlang der Bahn: Schulter {shoulder_z}, Ellbogen {elbow_z} '
+            f'(Sicherheitsabstand {self.middle_joint_clearance.value():.1f} cm)</p>'
+        )
+        return "".join(html)
 
     def _create_esp_dialog(self) -> QDialog:
         dialog = QDialog(self)
@@ -976,11 +1341,11 @@ class MainWindow(QMainWindow):
         bridge_layout.addWidget(QLabel("Baudrate"), 1, 0)
         bridge_layout.addWidget(self.baud_combo, 1, 1)
         bridge_layout.addWidget(self.connect_bridge_button, 1, 2)
-        bridge_layout.addWidget(self.disconnect_bridge_button, 2, 2)
-        bridge_layout.addWidget(self.send_a_button, 2, 0)
-        bridge_layout.addWidget(self.send_b_button, 2, 1)
+        bridge_layout.addWidget(self.disconnect_bridge_button, 3, 2)
+        bridge_layout.addWidget(self.send_step_button, 2, 2)
+        bridge_layout.addWidget(self.send_step_combo, 2, 0, 1, 2)
         bridge_layout.addWidget(QLabel("Status"), 3, 0)
-        bridge_layout.addWidget(self.bridge_status, 3, 1, 1, 2)
+        bridge_layout.addWidget(self.bridge_status, 3, 1)
         bridge_layout.addWidget(QLabel("Firmware"), 4, 0)
         bridge_layout.addWidget(self.firmware_combo, 4, 1)
         bridge_layout.addWidget(self.firmware_motor_id, 4, 2)
@@ -1217,25 +1582,22 @@ class MainWindow(QMainWindow):
         return spinbox
 
     def get_config(self) -> RobotConfig:
-        return RobotConfig(self.base_height.value(), self.link_1.value(), self.link_2.value())
+        return RobotConfig(
+            self.base_height.value(),
+            self.link_1.value(),
+            self.link_2.value(),
+            self.servo_open.value(),
+            self.servo_closed.value(),
+        )
 
     def calculate_positions(self) -> None:
         self.stop_animation()
         try:
-            self.current_config = self.get_config()
-            self.start_target_value = self.inputs.start_target()
-            self.end_target_value = self.inputs.end_target()
-            (
-                self.start_state,
-                self.end_state,
-                self.start_elbow_up,
-                self.end_elbow_up,
-                self.min_path_shoulder_z,
-                self.min_path_elbow_z,
-            ) = solve_safe_motion_pair(
-                self.start_target_value,
-                self.end_target_value,
-                self.current_config,
+            config = self.get_config()
+            targets = self.inputs.targets()
+            states, elbow_flags, min_shoulder, min_elbow = solve_safe_path(
+                targets,
+                config,
                 preferred_elbow_up=self.elbow_up.isChecked(),
                 min_middle_joint_z=self.middle_joint_clearance.value(),
             )
@@ -1243,17 +1605,33 @@ class MainWindow(QMainWindow):
             self._show_error(str(exc))
             return
 
-        self.visualizer.set_scene(self.current_config, self.start_state, self.start_target_value, self.end_target_value)
+        self.current_config = config
+        self.targets = targets
+        self.states = states
+        self.elbow_flags = elbow_flags
+        self.min_path_shoulder_z = min_shoulder
+        self.min_path_elbow_z = min_elbow
+        self.keyframes = build_keyframes(targets, states, config)
+
+        self.visualizer.set_scene(config, self.keyframes[0].state, self.targets)
+        self.result_summary.setHtml(self._build_summary_html())
         self.result_text.setPlainText(self._build_result_text())
+        self._update_send_steps()
 
     def animate_motion(self) -> None:
-        if self.start_state is None or self.end_state is None:
+        if not self.keyframes:
             self.calculate_positions()
-            if self.start_state is None or self.end_state is None:
+            if not self.keyframes:
                 return
 
         self.stop_animation()
-        self.animation_frames = max(30, int(self.duration.value() * 30))
+        frames: list[JointState] = [self.keyframes[0].state]
+        for previous, current in zip(self.keyframes, self.keyframes[1:]):
+            seconds = GRIPPER_ACTION_S if current.kind == "gripper" else self.duration.value()
+            count = max(10, int(seconds * 30))
+            for step in range(1, count + 1):
+                frames.append(interpolate_state(previous.state, current.state, step / count))
+        self.animation_states = frames
         self.animation_index = 0
         self.animation_timer.start()
 
@@ -1262,24 +1640,11 @@ class MainWindow(QMainWindow):
             self.animation_timer.stop()
 
     def _advance_animation(self) -> None:
-        if (
-            self.start_state is None
-            or self.end_state is None
-            or self.current_config is None
-            or self.start_target_value is None
-            or self.end_target_value is None
-        ):
+        if self.current_config is None or self.animation_index >= len(self.animation_states):
             self.animation_timer.stop()
             return
 
-        factor = self.animation_index / self.animation_frames
-        state = interpolate_state(self.start_state, self.end_state, factor)
-        self.visualizer.set_scene(self.current_config, state, self.start_target_value, self.end_target_value)
-
-        if self.animation_index >= self.animation_frames:
-            self.animation_timer.stop()
-            return
-
+        self.visualizer.set_scene(self.current_config, self.animation_states[self.animation_index], self.targets)
         self.animation_index += 1
 
     def refresh_serial_ports(self) -> None:
@@ -1322,31 +1687,36 @@ class MainWindow(QMainWindow):
         self._append_bridge_log("Serielle Verbindung getrennt.")
         self._update_bridge_controls()
 
-    def send_position_to_bridge(self, position_name: str) -> None:
-        if self.start_state is None or self.end_state is None:
+    def _update_send_steps(self) -> None:
+        current = self.send_step_combo.currentIndex()
+        self.send_step_combo.clear()
+        for index, frame in enumerate(self.keyframes):
+            self.send_step_combo.addItem(frame.label, index)
+        if 0 <= current < self.send_step_combo.count():
+            self.send_step_combo.setCurrentIndex(current)
+        self._update_bridge_controls()
+
+    def send_selected_step(self) -> None:
+        if not self.keyframes:
             self.calculate_positions()
-            if self.start_state is None or self.end_state is None:
+            if not self.keyframes:
                 return
 
-        if position_name == "A":
-            target = self.start_target_value
-            state = self.start_state
-        else:
-            target = self.end_target_value
-            state = self.end_state
-
-        if target is None or state is None:
+        index = self.send_step_combo.currentData()
+        if not isinstance(index, int) or not 0 <= index < len(self.keyframes):
             self._show_error("Es sind noch keine berechneten Positionen vorhanden.")
             return
 
-        payload = build_serial_payload(f"Position {position_name}", target, state, self.duration.value())
+        frame = self.keyframes[index]
+        seconds = GRIPPER_ACTION_S if frame.kind == "gripper" else self.duration.value()
+        payload = build_serial_payload(f"Schritt {frame.label}", self.targets[frame.point_index], frame.state, seconds)
         try:
             responses = self.serial_bridge.send_payload(payload)
         except SerialBridgeError as exc:
             self._show_error(str(exc))
             return
 
-        self._append_bridge_log(f"TX Position {position_name}: {json.dumps(payload, ensure_ascii=True)}")
+        self._append_bridge_log(f"TX {frame.label}: {json.dumps(payload, ensure_ascii=True)}")
         if responses:
             for response in responses:
                 self._append_bridge_log(f"RX: {response}")
@@ -1358,8 +1728,8 @@ class MainWindow(QMainWindow):
         has_serial = serial is not None
         self.connect_bridge_button.setEnabled(has_serial and not connected)
         self.disconnect_bridge_button.setEnabled(connected)
-        self.send_a_button.setEnabled(connected)
-        self.send_b_button.setEnabled(connected)
+        self.send_step_combo.setEnabled(connected and self.send_step_combo.count() > 0)
+        self.send_step_button.setEnabled(connected and self.send_step_combo.count() > 0)
         self.deploy_firmware_button.setEnabled(has_serial and not connected)
         self.firmware_combo.setEnabled(not connected)
         self.firmware_motor_id.setEnabled(not connected and self.firmware_combo.currentData() == "motor")
@@ -1370,58 +1740,34 @@ class MainWindow(QMainWindow):
             self.bridge_status.setText("Nicht verbunden")
 
     def _build_result_text(self) -> str:
-        if (
-            self.start_state is None
-            or self.end_state is None
-            or self.start_target_value is None
-            or self.end_target_value is None
-        ):
+        if not self.keyframes:
             return ""
 
-        payload_a = build_serial_payload("Position A", self.start_target_value, self.start_state, self.duration.value())
-        payload_b = build_serial_payload("Position B", self.end_target_value, self.end_state, self.duration.value())
-        start_solution = "eingeklappt" if self.start_elbow_up else "ausgeklappt"
-        end_solution = "eingeklappt" if self.end_elbow_up else "ausgeklappt"
         min_shoulder_text = "unbekannt" if self.min_path_shoulder_z is None else f"{self.min_path_shoulder_z:.2f} cm"
         min_elbow_text = "unbekannt" if self.min_path_elbow_z is None else f"{self.min_path_elbow_z:.2f} cm"
-        clearance_text = f"{self.middle_joint_clearance.value():.2f} cm"
-        return (
-            self._format_result("Position A", self.start_target_value, self.start_state)
-            + "\n"
-            + self._format_result("Position B", self.end_target_value, self.end_state)
-            + "\n"
-            + self._format_delta(self.start_state, self.end_state)
-            + "\n"
-            + "Sicherheitspruefung mittlere Gelenke\n"
-            + f"Eingestellter Sicherheitsabstand: {clearance_text}\n"
-            + f"IK-Loesung A: {start_solution}\n"
-            + f"IK-Loesung B: {end_solution}\n"
-            + f"Mindesthoehe Schulter entlang A->B: {min_shoulder_text}\n"
-            + f"Mindesthoehe Ellbogen entlang A->B: {min_elbow_text}\n\n"
-            + "Beispielpaket fuer ESP32-Bridge A\n"
-            + json.dumps(payload_a, indent=2, ensure_ascii=True)
-            + "\n\n"
-            + "Beispielpaket fuer ESP32-Bridge B\n"
-            + json.dumps(payload_b, indent=2, ensure_ascii=True)
-        )
+        lines = ["Sicherheitspruefung mittlere Gelenke", f"Eingestellter Sicherheitsabstand: {self.middle_joint_clearance.value():.2f} cm"]
+        for index, elbow_up in enumerate(self.elbow_flags):
+            lines.append(f"IK-Loesung {waypoint_name(index)}: {'eingeklappt' if elbow_up else 'ausgeklappt'}")
+        lines.append(f"Mindesthoehe Schulter entlang der Bahn: {min_shoulder_text}")
+        lines.append(f"Mindesthoehe Ellbogen entlang der Bahn: {min_elbow_text}")
+        text = "\n".join(lines) + "\n\n"
+
+        for frame in self.keyframes:
+            target = self.targets[frame.point_index]
+            seconds = GRIPPER_ACTION_S if frame.kind == "gripper" else self.duration.value()
+            payload = build_serial_payload(f"Schritt {frame.label}", target, frame.state, seconds)
+            text += self._format_result(f"Schritt {frame.label}", target, frame.state) + "\n"
+            text += json.dumps(payload, indent=2, ensure_ascii=True) + "\n\n"
+        return text
 
     def _format_result(self, title: str, target: TargetPoint, state: JointState) -> str:
         return (
             f"{title}\n"
             f"Zielpunkt: x={target.x:6.1f} cm, y={target.y:6.1f} cm, z={target.z:6.1f} cm\n"
-            f"Motor 1 Standachse : {state.base_deg:7.2f}°\n"
-            f"Motor 2 Arm kippen : {state.shoulder_deg:7.2f}°\n"
-            f"Motor 3 Handgelenk : {state.wrist_deg:7.2f}°\n"
-            f"Motor 4 Klammer     : {state.gripper_deg:7.2f}°\n"
-        )
-
-    def _format_delta(self, start: JointState, end: JointState) -> str:
-        return (
-            "Bewegung A -> B\n"
-            f"Motor 1 Delta: {end.base_deg - start.base_deg:7.2f}°\n"
-            f"Motor 2 Delta: {end.shoulder_deg - start.shoulder_deg:7.2f}°\n"
-            f"Motor 3 Delta: {end.wrist_deg - start.wrist_deg:7.2f}°\n"
-            f"Motor 4 Delta: {end.gripper_deg - start.gripper_deg:7.2f}°\n"
+            f"Motor 1 Standachse (Stepper) : {state.base_deg:7.2f}°\n"
+            f"Motor 2 Arm kippen (Stepper) : {state.shoulder_deg:7.2f}°\n"
+            f"Motor 3 Handgelenk (Stepper) : {state.wrist_deg:7.2f}°\n"
+            f"Greifer (Servo SG90)         : {state.gripper_deg:7.2f}°\n"
         )
 
     def _append_bridge_log(self, text: str) -> None:
@@ -1433,6 +1779,10 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setFont(QFont(FONT_FAMILY, 13))
+    app.setStyleSheet(APP_STYLE)
+    app.setWindowIcon(QIcon(str(asset_path("logo.png"))))
     window = MainWindow()
     window.show()
     return app.exec()

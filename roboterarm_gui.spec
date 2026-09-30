@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 project_root = Path(SPECPATH)
 
@@ -10,6 +11,9 @@ block_cipher = None
 added_files = [
     (str(project_root / "README.md"), "."),
 ]
+
+for child in (project_root / "assets").glob("logo.png"):
+    added_files.append((str(child), "assets"))
 
 for child in (project_root / "esp32_bridge").iterdir():
     if child.is_file():
@@ -44,6 +48,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=str(project_root / 'assets' / 'icon.ico') if sys.platform == 'win32' else None,
 )
 coll = COLLECT(
     exe,
@@ -58,6 +63,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='RoboterarmSteuerung.app',
-    icon=None,
+    icon=str(project_root / 'assets' / 'icon.icns'),
     bundle_identifier='de.schule.roboterarm',
 )

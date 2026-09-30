@@ -15,6 +15,8 @@ OutputBaseFilename=RoboterarmSteuerung-Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\..\assets\icon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"

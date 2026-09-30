@@ -1,11 +1,11 @@
 # Roboterarm-GUI
 
-Dieses Python-Programm berechnet aus zwei Zielpositionen im Raum die benoetigten Motorwinkel fuer einen Roboterarm mit vier Motoren:
+Dieses Python-Programm berechnet aus mehreren Zielpunkten im Raum (A, B, C, ...) die benoetigten Motorwinkel fuer einen Roboterarm mit drei Schrittmotoren und einem Greifer-Servo (SG90):
 
 - Motor 1: Drehung um die Standachse
 - Motor 2: Kippen des ersten Armsegments
 - Motor 3: Kippen des zweiten Armsegments am Handgelenk
-- Motor 4: Oeffnen und Schliessen der Klammer
+- Motor 4: Greifer (Servo SG90), oeffnen und schliessen
 
 Zusatzfunktionen:
 
@@ -21,7 +21,7 @@ Zusatzfunktionen:
 - Der Arm wird als 2-gliedrige Kette mit den Laengen `Armlaenge 1` und `Armlaenge 2` modelliert.
 - Die Koordinaten `x` und `y` bestimmen die Drehung um die Standachse.
 - Die Koordinate `z` bestimmt gemeinsam mit dem radialen Abstand die Kippwinkel.
-- Der Klammerwinkel wird direkt als Motor-4-Wert verwendet.
+- Der Greifer-Servo bekommt die Winkel fuer "offen" und "geschlossen" aus dem Bereich `Greifer (Servo SG90)`. Am Anfang ist der Greifer offen.
 
 ## Starten
 
@@ -35,11 +35,11 @@ python3 roboterarm_gui.py
 ## Bedienung
 
 1. Geometrie des Arms in Zentimetern eintragen.
-2. Zwei Punkte A und B mit `x`, `y`, `z` angeben.
-3. Klammerwinkel fuer beide Punkte festlegen.
+2. Punkte A, B und beliebig viele weitere (`Punkt hinzufuegen`, maximal 12) mit `x`, `y`, `z` angeben. Der Arm faehrt sie nacheinander an.
+3. Pro Punkt die Greiferaktion waehlen: keine Aktion, schliessen, oeffnen, oeffnen und schliessen oder schliessen und oeffnen (bei A nur keine Aktion oder schliessen, da der Greifer offen startet).
 4. Auf `Winkel berechnen` klicken.
 5. Optional die Bewegung mit `Bewegung animieren` abspielen.
-6. Optional einen per USB angeschlossenen ESP32 als Bridge verbinden und Position A oder B senden.
+6. Optional einen per USB angeschlossenen ESP32 als Bridge verbinden und einzelne Schritte senden.
 
 Die GUI zeigt:
 
@@ -161,7 +161,7 @@ struct MotorCommandPacket {
 1. Bridge-ESP32 per USB verbinden und [esp32_bridge/esp32_bridge.ino](esp32_bridge/esp32_bridge.ino) flashen.
 2. In der Firmware die 4 MAC-Adressen in `PEER_MACS` auf die 4 Motor-ESP32 anpassen.
 3. Sicherstellen, dass alle ESP32 im gleichen WLAN-Kanal arbeiten (ESP-NOW).
-4. In der GUI den seriellen Port auswaehlen, verbinden und `Position A senden` oder `Position B senden` klicken.
+4. In der GUI den seriellen Port auswaehlen, verbinden und den gewuenschten Schritt (z. B. `B` oder `B · Oeffnen`) auswaehlen und `Senden` klicken.
 5. Die Bridge verteilt jedes Motorobjekt nach `id` an den passenden Peer:
 	- `id=1` -> Peer 1 (Motor 1)
 	- `id=2` -> Peer 2 (Motor 2)
