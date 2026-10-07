@@ -11,7 +11,7 @@ Zusatzfunktionen:
 
 - Seitenansicht, Draufsicht und 3D-Ansicht des Arms
 - serielle Anbindung an einen angeschlossenen ESP32
-- vorbereitete ESP-NOW-Bridge fuer vier Motor-ESP32
+- ESP-NOW-Bridge (nitbw_espnow) fuer bis zu vier Schueler-ESP32, mit Roboter-Profilen und Statusanzeige
 - Hilfe-Menue mit direkter Anzeige dieser README in der GUI
 
 ## Annahmen des Modells
@@ -55,21 +55,15 @@ Die GUI zeigt:
 In der Anwendung gibt es im Menue `Hilfe` den Eintrag `README anzeigen`.
 Damit wird diese Datei direkt in einem Hilfefenster geoeffnet.
 
-## Firmware direkt aus der GUI auf ESP32 schreiben
+## Bridge-Firmware direkt aus der GUI auf den ESP32 schreiben
 
-Im Bereich `ESP32-Bridge` gibt es die Funktion `Firmware als main.py auf ESP32`.
+Im Fenster `ESP32-Kommunikation` gibt es den Button `Bridge-Firmware auf ESP32 schreiben`.
 
-Vorgehen:
-
-1. ESP32 per USB verbinden.
+1. ESP32 (mit MicroPython) per USB verbinden.
 2. In der GUI den seriellen Port auswaehlen.
-3. Firmware-Typ waehlen:
-	- `Bridge (MicroPython)` fuer den zentralen Bridge-ESP32
-	- `Motor-Empfaenger (MicroPython)` fuer Motor-ESP32
-4. Beim Motor-Empfaenger die gewuenschte Motor-ID (1..4) waehlen.
-5. Button `Firmware als main.py auf ESP32` klicken.
+3. Button klicken.
 
-Die GUI schreibt dann die ausgewaehlte Firmware als `main.py` auf den ESP32 (mit `mpremote`) und fuehrt einen Reset aus.
+Die GUI schreibt `nitbw_espnow.py` (ESP-NOW-Bibliothek) und die Bridge als `main.py` auf den ESP32 (mit `mpremote`) und fuehrt einen Reset aus.
 
 Voraussetzung auf dem Rechner:
 
@@ -103,91 +97,43 @@ Die Python-Anwendung sendet pro Zielposition eine JSON-Zeile ueber USB-Serial an
 
 ## ESP32-Bridge mit ESP-NOW
 
-Im Ordner [esp32_bridge/esp32_bridge.ino](esp32_bridge/esp32_bridge.ino) liegt ein Beispiel fuer einen ESP32, der:
+Die Motoren werden von den Schuelern selbst angesteuert. Die GUI berechnet nur die Winkel und schickt sie ueber **eine** Bridge (ein per USB angeschlossener ESP32) per ESP-NOW an bis zu vier Schueler-ESP32. Die Bridge ([esp32_bridge/esp32_bridge_micropython.py](esp32_bridge/esp32_bridge_micropython.py)) nutzt dafuer die Bibliothek `nitbw_espnow` aus [NIT_Bibliotheken/ESPNOW](https://github.com/juchemGDG/NIT_Bibliotheken/tree/main/ESPNOW).
 
-- die JSON-Zeile seriell vom PC entgegennimmt
-- fuer jeden Motor ein kompaktes Paket erstellt
-- die vier Pakete per ESP-NOW an die Motor-ESP32 sendet
+### Bedienung im Fenster `ESP32-Kommunikation`
 
-### MicroPython-Variante der Bridge
+1. Bridge-Firmware aufspielen (siehe oben), Port waehlen und `Verbinden`.
+2. Unter `MAC der Bridge` steht die MAC-Adresse der Bridge. Mit `Kopieren` in die Zwischenablage legen und den Schuelern geben.
+3. Unter `ESP32 der Schueler` die MAC-Adressen der vier Schueler-ESP32 eintragen (Motor 1 bis 4). Leere Felder werden uebersprungen.
+4. Mit Namen und `Speichern` wird die Konfiguration pro Roboter abgelegt und kann spaeter ueber die Auswahlliste `Roboter` wieder geladen werden. Die Datei `roboter_profile.json` liegt im Anwendungsdaten-Ordner des Benutzers.
+5. Der Status zeigt `Verbunden – n von m ESP32 erreichbar`, sobald Schueler-ESP32 per ESP-NOW antworten. Der Punkt neben jedem Motor ist gruen (erreichbar), rot (MAC eingetragen, aber keine Antwort) oder grau (keine MAC).
+6. Unter `Uebertragene Daten` erscheinen alle gesendeten Winkel (`→`) und alle Nachrichten, die Schueler-ESP32 an die Bridge schicken (`←`).
 
-Zusaetzlich gibt es eine Bridge-Firmware in MicroPython:
-[esp32_bridge/esp32_bridge_micropython.py](esp32_bridge/esp32_bridge_micropython.py)
+ESP-NOW kennt keine echte Verbindung. "Erreichbar" heisst: Die Bridge sendet alle 3 Sekunden ein `{"ping": 1}` an jede eingetragene MAC, und der ESP32 bestaetigt den Empfang auf Funkebene. Dafuer muss auf dem Schueler-ESP32 lediglich ESP-NOW aktiv sein.
 
-Kurz nutzen:
+### Datenformat fuer die Schueler-ESP32
 
-1. Auf dem Bridge-ESP32 MicroPython installieren.
-2. Die Datei [esp32_bridge/esp32_bridge_micropython.py](esp32_bridge/esp32_bridge_micropython.py) als `main.py` auf den ESP32 kopieren.
-3. In der Datei die 4 MAC-Adressen in `PEER_MACS` auf eure Motor-ESP32 anpassen.
-4. ESP32 neu starten und in der GUI den seriellen Port mit 115200 Baud verbinden.
+Jeder Motor bekommt eine eigene JSON-Nachricht (zu empfangen mit `esp.receive_json()`):
 
-Die MicroPython-Bridge nutzt dasselbe serielle JSON-Protokoll wie die Desktop-GUI.
-Die Weiterleitung erfolgt ebenfalls nach Motor-ID (`id=1..4`) an den jeweils passenden Peer.
-
-### MicroPython-Empfaenger fuer Motor-ESP32
-
-Fuer die 4 Motor-Controller gibt es eine zusaetzliche MicroPython-Datei:
-[esp32_bridge/esp32_motor_receiver_micropython.py](esp32_bridge/esp32_motor_receiver_micropython.py)
-
-Diese Firmware laeuft auf jedem Motor-ESP32 und:
-
-- empfaengt ESP-NOW-Pakete von der Bridge
-- entpackt das Motorpaket (16 Byte, gleiches Format wie in der Bridge)
-- akzeptiert nur den eigenen `MOTOR_ID`-Wert
-- steuert wahlweise Servo oder Stepper
-
-Kurz nutzen (pro Motor-ESP32):
-
-1. Datei [esp32_bridge/esp32_motor_receiver_micropython.py](esp32_bridge/esp32_motor_receiver_micropython.py) als `main.py` auf den Motor-ESP32 kopieren.
-2. `MOTOR_ID` auf 1, 2, 3 oder 4 setzen (je Board unterschiedlich).
-3. `ACTUATOR_MODE` auf `servo` oder `stepper` setzen.
-4. Passende Pins und Grenzen fuer den Motor im Kopf der Datei anpassen.
-5. Optional `BRIDGE_MAC` setzen, damit nur die bekannte Bridge akzeptiert wird.
-6. Neustarten und serielle Konsole pruefen (`{"status":"ready",...}`).
-
-Hinweis: Das Paketformat ist identisch zur Bridge-Firmware:
-
-```cpp
-struct MotorCommandPacket {
-	uint8_t motorId;
-	float targetDeg;
-	uint16_t durationMs;
-	uint32_t sequence;
-};
+```json
+{"id": 1, "name": "base", "target_deg": 45.0, "duration_ms": 1000, "seq": 7}
 ```
 
-### Firmware der Bridge nutzen (kurz)
+Nachrichten ohne `id` (z. B. `{"ping": 1}`) koennen ignoriert werden. Ein Beispiel liegt in [esp32_bridge/esp32_schueler_beispiel.py](esp32_bridge/esp32_schueler_beispiel.py).
 
-1. Bridge-ESP32 per USB verbinden und [esp32_bridge/esp32_bridge.ino](esp32_bridge/esp32_bridge.ino) flashen.
-2. In der Firmware die 4 MAC-Adressen in `PEER_MACS` auf die 4 Motor-ESP32 anpassen.
-3. Sicherstellen, dass alle ESP32 im gleichen WLAN-Kanal arbeiten (ESP-NOW).
-4. In der GUI den seriellen Port auswaehlen, verbinden und den gewuenschten Schritt (z. B. `B` oder `B · Oeffnen`) auswaehlen und `Senden` klicken.
-5. Die Bridge verteilt jedes Motorobjekt nach `id` an den passenden Peer:
-	- `id=1` -> Peer 1 (Motor 1)
-	- `id=2` -> Peer 2 (Motor 2)
-	- `id=3` -> Peer 3 (Motor 3)
-	- `id=4` -> Peer 4 (Motor 4)
+### Serielle Befehle GUI -> Bridge
 
-Rueckmeldungen der Bridge auf Serial:
+- `{"command":"info"}`: Bridge antwortet mit `{"status":"ready","mac":"..."}`
+- `{"command":"config","peers":["MAC1","MAC2","MAC3","MAC4"]}`: setzt die Ziel-MACs (leerer String = nicht belegt)
+- `{"command":"move",...}`: siehe oben
 
-- `{"status":"ready",...}` nach dem Start
-- `{"status":"ok","sequence":...,"forwarded":...,"invalid":...,"failed":...}` pro empfangenem Move-Befehl
-- `{"status":"tx","mac":"...","result":"ok|fail"}` pro ESP-NOW-Übertragung
+Rueckmeldungen der Bridge:
 
-Vor dem Flashen anpassen:
-
-1. In [esp32_bridge/esp32_bridge.ino](esp32_bridge/esp32_bridge.ino) die vier MAC-Adressen der Motor-ESP32 eintragen.
-2. In der Arduino-IDE fuer den Bridge-ESP32 die Bibliothek `ArduinoJson` installieren.
-3. Sicherstellen, dass die Motor-ESP32 dasselbe Datenformat empfangen:
-
-```cpp
-struct MotorCommandPacket {
-	uint8_t motorId;
-	float targetDeg;
-	uint16_t durationMs;
-	uint32_t sequence;
-};
-```
+- `{"status":"ready","mac":"..."}` nach dem Start
+- `{"status":"config","count":n}` nach `config`
+- `{"status":"tx","motor_id":..,"mac":"..","target_deg":..,"duration_ms":..,"result":"ok|fail"}` pro Motor
+- `{"status":"ok","sequence":...,"forwarded":...,"invalid":...,"failed":...}` pro Move-Befehl
+- `{"status":"peer","motor_id":..,"online":true|false}` pro Ping
+- `{"status":"rx","mac":"..","data":".."}` fuer Nachrichten, die an die Bridge gesendet werden
 
 ## Hinweise
 

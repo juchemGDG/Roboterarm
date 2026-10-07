@@ -6,13 +6,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, replace
 import itertools
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, QSize, QTimer, Qt
+from PySide6.QtCore import QPointF, QRectF, QRegularExpression, QSize, QStandardPaths, QTimer, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -25,6 +24,7 @@ from PySide6.QtGui import (
     QPixmap,
     QPolygonF,
     QRadialGradient,
+    QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -453,11 +454,60 @@ def build_serial_payload(profile: str, target: TargetPoint, state: JointState, d
     }
 
 
+MAC_PATTERN = QRegularExpression(r"^\s*([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\s*$")
+PEER_TIMEOUT_S = 8.0
+
+
+def normalize_mac(text: str) -> str | None:
+    """Gibt die MAC als 'AA:BB:CC:DD:EE:FF' zurueck, None bei ungueltiger Eingabe."""
+    text = text.strip().upper().replace("-", ":")
+    parts = text.split(":")
+    if len(parts) != 6 or any(len(part) != 2 for part in parts):
+        return None
+    try:
+        for part in parts:
+            int(part, 16)
+    except ValueError:
+        return None
+    return text
+
+
+class RobotProfileStore:
+    """Speichert pro Roboter die MAC-Adressen der vier Schueler-ESP32 als JSON-Datei."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.profiles: dict[str, list[str]] = {}
+        self.last = ""
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        profiles = data.get("profiles", {}) if isinstance(data, dict) else {}
+        for name, macs in profiles.items():
+            if isinstance(name, str) and isinstance(macs, list):
+                padded = [str(mac) for mac in macs[:len(MOTOR_LAYOUT)]]
+                self.profiles[name] = padded + [""] * (len(MOTOR_LAYOUT) - len(padded))
+        last = data.get("last", "") if isinstance(data, dict) else ""
+        self.last = last if last in self.profiles else ""
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps({"last": self.last, "profiles": self.profiles}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
 class SerialBridge:
     def __init__(self) -> None:
         self.connection: Any | None = None
         self.port_name = ""
         self.baudrate = 115200
+        self._rx_buffer = b""
 
     def available_ports(self) -> list[str]:
         if list_ports is None:
@@ -476,6 +526,7 @@ class SerialBridge:
         self.baudrate = baudrate
 
     def disconnect(self) -> None:
+        self._rx_buffer = b""
         if self.connection is not None:
             self.connection.close()
             self.connection = None
@@ -483,29 +534,31 @@ class SerialBridge:
     def is_connected(self) -> bool:
         return self.connection is not None and bool(getattr(self.connection, "is_open", False))
 
-    def send_payload(self, payload: dict[str, Any]) -> list[str]:
+    def send_payload(self, payload: dict[str, Any]) -> None:
         if not self.is_connected():
             raise SerialBridgeError("Keine serielle Verbindung zur ESP32-Bridge aktiv.")
 
         line = json.dumps(payload, separators=(",", ":")) + "\n"
         try:
-            self.connection.reset_input_buffer()
             self.connection.write(line.encode("utf-8"))
             self.connection.flush()
         except Exception as exc:
             raise SerialBridgeError(f"Senden fehlgeschlagen: {exc}") from exc
 
-        responses: list[str] = []
-        deadline = time.monotonic() + 0.45
-        while time.monotonic() < deadline:
-            try:
-                raw = self.connection.readline()
-            except Exception as exc:
-                raise SerialBridgeError(f"Lesen der Bridge-Antwort fehlgeschlagen: {exc}") from exc
-            if not raw:
-                break
-            responses.append(raw.decode("utf-8", errors="replace").strip())
-        return responses
+    def read_lines(self) -> list[str]:
+        """Liest alle bereits eingetroffenen, vollstaendigen Zeilen (nicht blockierend)."""
+        if not self.is_connected():
+            return []
+        try:
+            waiting = self.connection.in_waiting
+            if waiting:
+                self._rx_buffer += self.connection.read(waiting)
+        except Exception as exc:
+            raise SerialBridgeError(f"Lesen der Bridge-Antwort fehlgeschlagen: {exc}") from exc
+
+        *complete, self._rx_buffer = self._rx_buffer.split(b"\n")
+        lines = [raw.decode("utf-8", errors="replace").strip() for raw in complete]
+        return [line for line in lines if line]
 
 
 class ArmViewBase(QWidget):
@@ -1147,17 +1200,41 @@ class MainWindow(QMainWindow):
         self.disconnect_bridge_button = QPushButton("Trennen")
         self.send_step_combo = QComboBox()
         self.send_step_button = QPushButton("Senden")
-        self.firmware_combo = QComboBox()
-        self.firmware_combo.addItem("Bridge (MicroPython)", "bridge")
-        self.firmware_combo.addItem("Motor-Empfaenger (MicroPython)", "motor")
-        self.firmware_motor_id = QComboBox()
-        self.firmware_motor_id.addItems(["1", "2", "3", "4"])
-        self.deploy_firmware_button = QPushButton("Firmware als main.py auf ESP32")
+        self.deploy_firmware_button = QPushButton("Bridge-Firmware auf ESP32 schreiben")
         self.bridge_status = QLabel("Nicht verbunden")
+        self.bridge_mac_edit = QLineEdit()
+        self.bridge_mac_edit.setReadOnly(True)
+        self.bridge_mac_edit.setPlaceholderText("Erscheint nach dem Verbinden der Bridge")
+        self.copy_mac_button = QPushButton("Kopieren")
+        self.espnow_status = QLabel()
+        self.profile_store = RobotProfileStore(self._profile_path())
+        self.profile_combo = QComboBox()
+        self.profile_combo.setEditable(True)
+        self.profile_combo.lineEdit().setPlaceholderText("Name des Roboters")
+        self.save_profile_button = QPushButton("Speichern")
+        self.delete_profile_button = QPushButton("Löschen")
+        self.peer_edits: list[QLineEdit] = []
+        self.peer_dots: list[QLabel] = []
+        for _ in MOTOR_LAYOUT:
+            edit = QLineEdit()
+            edit.setPlaceholderText("AA:BB:CC:DD:EE:FF")
+            edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"[0-9A-Fa-f:\-]{0,17}"), edit))
+            self.peer_edits.append(edit)
+            self.peer_dots.append(QLabel("●"))
+        self.peer_last_ok: list[float | None] = [None] * len(MOTOR_LAYOUT)
         self.bridge_log = QTextEdit()
         self.bridge_log.setReadOnly(True)
-        self.bridge_log.setMinimumHeight(120)
+        self.bridge_log.setFont(QFont("Courier New", 11))
+        self.bridge_log.setMinimumHeight(180)
+        self.clear_log_button = QPushButton("Leeren")
         self.esp_dialog = self._create_esp_dialog()
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(100)
+        self.poll_timer.timeout.connect(self._poll_bridge)
+        self.status_timer = QTimer(self)
+        self.status_timer.setInterval(1000)
+        self.status_timer.timeout.connect(self._refresh_espnow_status)
+        self.status_timer.start()
 
         controls_content = QWidget()
         controls_content.setObjectName("central")
@@ -1228,13 +1305,19 @@ class MainWindow(QMainWindow):
         self.connect_bridge_button.clicked.connect(self.connect_bridge)
         self.disconnect_bridge_button.clicked.connect(self.disconnect_bridge)
         self.send_step_button.clicked.connect(self.send_selected_step)
-        self.deploy_firmware_button.clicked.connect(self.deploy_selected_firmware)
-        self.firmware_combo.currentIndexChanged.connect(self._update_firmware_ui)
+        self.deploy_firmware_button.clicked.connect(self.deploy_bridge_firmware)
+        self.copy_mac_button.clicked.connect(self.copy_bridge_mac)
+        self.save_profile_button.clicked.connect(self.save_profile)
+        self.delete_profile_button.clicked.connect(self.delete_profile)
+        self.profile_combo.activated.connect(self._load_profile)
+        self.clear_log_button.clicked.connect(self.bridge_log.clear)
+        for edit in self.peer_edits:
+            edit.editingFinished.connect(self._peer_edit_finished)
         self.view_mode_combo.currentIndexChanged.connect(self._change_3d_mode)
         self.reset_view_button.clicked.connect(self.visualizer.reset_3d_camera)
 
         self.refresh_serial_ports()
-        self._update_firmware_ui()
+        self._reload_profile_combo(select=self.profile_store.last)
         self._update_bridge_controls()
         self.visualizer.set_3d_mode("isometric")
         initial_config = self.get_config()
@@ -1326,33 +1409,59 @@ class MainWindow(QMainWindow):
         )
         return "".join(html)
 
+    def _profile_path(self) -> Path:
+        base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        return Path(base or Path.home() / ".roboterarm") / "roboter_profile.json"
+
     def _create_esp_dialog(self) -> QDialog:
         dialog = QDialog(self)
         dialog.setWindowTitle("ESP32-Kommunikation")
-        dialog.resize(760, 560)
+        dialog.resize(820, 860)
 
         dialog_layout = QVBoxLayout(dialog)
-        bridge_box = QGroupBox("ESP32-Bridge und Firmware")
-        bridge_layout = QGridLayout(bridge_box)
 
+        bridge_box = QGroupBox("Bridge-ESP32 (per USB angeschlossen)")
+        bridge_layout = QGridLayout(bridge_box)
         bridge_layout.addWidget(QLabel("Serieller Port"), 0, 0)
         bridge_layout.addWidget(self.port_combo, 0, 1)
         bridge_layout.addWidget(self.refresh_ports_button, 0, 2)
         bridge_layout.addWidget(QLabel("Baudrate"), 1, 0)
         bridge_layout.addWidget(self.baud_combo, 1, 1)
         bridge_layout.addWidget(self.connect_bridge_button, 1, 2)
-        bridge_layout.addWidget(self.disconnect_bridge_button, 3, 2)
-        bridge_layout.addWidget(self.send_step_button, 2, 2)
-        bridge_layout.addWidget(self.send_step_combo, 2, 0, 1, 2)
-        bridge_layout.addWidget(QLabel("Status"), 3, 0)
-        bridge_layout.addWidget(self.bridge_status, 3, 1)
-        bridge_layout.addWidget(QLabel("Firmware"), 4, 0)
-        bridge_layout.addWidget(self.firmware_combo, 4, 1)
-        bridge_layout.addWidget(self.firmware_motor_id, 4, 2)
-        bridge_layout.addWidget(self.deploy_firmware_button, 5, 0, 1, 3)
-        bridge_layout.addWidget(self.bridge_log, 6, 0, 1, 3)
+        bridge_layout.addWidget(QLabel("Status"), 2, 0)
+        bridge_layout.addWidget(self.bridge_status, 2, 1)
+        bridge_layout.addWidget(self.disconnect_bridge_button, 2, 2)
+        bridge_layout.addWidget(QLabel("MAC der Bridge"), 3, 0)
+        bridge_layout.addWidget(self.bridge_mac_edit, 3, 1)
+        bridge_layout.addWidget(self.copy_mac_button, 3, 2)
+        bridge_layout.addWidget(self.deploy_firmware_button, 4, 0, 1, 3)
+
+        peers_box = QGroupBox("ESP32 der Schüler (ESP-NOW)")
+        peers_layout = QGridLayout(peers_box)
+        peers_layout.addWidget(self.espnow_status, 0, 0, 1, 4)
+        peers_layout.addWidget(QLabel("Roboter"), 1, 0)
+        peers_layout.addWidget(self.profile_combo, 1, 1)
+        profile_buttons = QHBoxLayout()
+        profile_buttons.addWidget(self.save_profile_button)
+        profile_buttons.addWidget(self.delete_profile_button)
+        peers_layout.addLayout(profile_buttons, 1, 2, 1, 2)
+        for row, (motor_id, _name, label) in enumerate(MOTOR_LAYOUT, start=2):
+            peers_layout.addWidget(QLabel(f"Motor {motor_id} · {label}"), row, 0)
+            peers_layout.addWidget(self.peer_edits[row - 2], row, 1, 1, 2)
+            peers_layout.addWidget(self.peer_dots[row - 2], row, 3)
+        peers_layout.setColumnStretch(1, 1)
+
+        data_box = QGroupBox("Übertragene Daten")
+        data_layout = QGridLayout(data_box)
+        data_layout.addWidget(self.send_step_combo, 0, 0)
+        data_layout.addWidget(self.send_step_button, 0, 1)
+        data_layout.addWidget(self.clear_log_button, 0, 2)
+        data_layout.addWidget(self.bridge_log, 1, 0, 1, 3)
+        data_layout.setColumnStretch(0, 1)
 
         dialog_layout.addWidget(bridge_box)
+        dialog_layout.addWidget(peers_box)
+        dialog_layout.addWidget(data_box, stretch=1)
         close_button = QPushButton("Schliessen")
         close_button.clicked.connect(dialog.accept)
         dialog_layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
@@ -1361,6 +1470,7 @@ class MainWindow(QMainWindow):
     def open_esp_dialog(self) -> None:
         self.refresh_serial_ports()
         self._update_bridge_controls()
+        self._refresh_espnow_status()
         self.esp_dialog.show()
         self.esp_dialog.raise_()
         self.esp_dialog.activateWindow()
@@ -1372,45 +1482,6 @@ class MainWindow(QMainWindow):
 
     def _firmware_path(self, filename: str) -> Path:
         return self._runtime_root() / "esp32_bridge" / filename
-
-    def _update_firmware_ui(self) -> None:
-        is_motor = self.firmware_combo.currentData() == "motor"
-        self.firmware_motor_id.setEnabled(is_motor)
-
-    def _build_motor_receiver_temp(self, motor_id: int) -> Path:
-        source_path = self._firmware_path("esp32_motor_receiver_micropython.py")
-        if not source_path.exists():
-            raise FirmwareDeployError(f"Datei nicht gefunden: {source_path}")
-
-        source_text = source_path.read_text(encoding="utf-8")
-        old_line = "MOTOR_ID = 1  # 1..4"
-        new_line = f"MOTOR_ID = {motor_id}  # 1..4"
-        if old_line in source_text:
-            modified = source_text.replace(old_line, new_line, 1)
-        else:
-            modified = source_text
-
-        temp_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".py", delete=False)
-        try:
-            temp_file.write(modified)
-            temp_path = Path(temp_file.name)
-        finally:
-            temp_file.close()
-        return temp_path
-
-    def _firmware_source_for_deploy(self) -> tuple[Path, str]:
-        firmware_kind = self.firmware_combo.currentData()
-        if firmware_kind == "bridge":
-            source_path = self._firmware_path("esp32_bridge_micropython.py")
-            return source_path, "Bridge"
-
-        try:
-            motor_id = int(self.firmware_motor_id.currentText())
-        except ValueError as exc:
-            raise FirmwareDeployError("Ungueltige Motor-ID fuer Empfaenger-Firmware.") from exc
-
-        temp_path = self._build_motor_receiver_temp(motor_id)
-        return temp_path, f"Motor-Empfaenger (ID {motor_id})"
 
     def _resolve_mpremote_launcher(self) -> list[str] | None:
         # 1) Wenn aus einer venv gestartet, liegt mpremote meistens neben dem Python-Interpreter.
@@ -1466,16 +1537,17 @@ class MainWindow(QMainWindow):
             detail = detail[:400] + " ..."
         return f"Upload fehlgeschlagen: {detail}"
 
-    def _copy_main_with_recovery(self, launcher: list[str], port_name: str, source_path: Path) -> None:
+    def _copy_file_with_recovery(self, launcher: list[str], port_name: str, source_path: Path, target: str) -> None:
+        src = str(source_path)
         attempts: list[tuple[str, list[str], int]] = [
-            ("Direkter Upload", ["connect", port_name, "fs", "cp", str(source_path), ":main.py"], 45),
-            ("Recovery: interrupt + soft-reset", ["connect", port_name, "interrupt", "soft-reset", "fs", "cp", str(source_path), ":main.py"], 60),
-            ("Recovery: reset + Upload", ["connect", port_name, "reset", "fs", "cp", str(source_path), ":main.py"], 60),
+            ("Direkter Upload", ["connect", port_name, "fs", "cp", src, f":{target}"], 45),
+            ("Recovery: interrupt + soft-reset", ["connect", port_name, "interrupt", "soft-reset", "fs", "cp", src, f":{target}"], 60),
+            ("Recovery: reset + Upload", ["connect", port_name, "reset", "fs", "cp", src, f":{target}"], 60),
         ]
 
         last_detail = "Unbekannter Fehler"
         for label, args, timeout in attempts:
-            self._append_bridge_log(f"{label}...")
+            self._append_bridge_log(f"{label} ({target})...")
             result = self._run_mpremote(launcher, args, timeout=timeout)
             if result.returncode == 0:
                 return
@@ -1487,7 +1559,7 @@ class MainWindow(QMainWindow):
 
         raise FirmwareDeployError(self._friendly_upload_error(last_detail))
 
-    def deploy_selected_firmware(self) -> None:
+    def deploy_bridge_firmware(self) -> None:
         if self.serial_bridge.is_connected():
             self._show_error("Bitte zuerst die serielle Bridge-Verbindung trennen.")
             return
@@ -1505,16 +1577,19 @@ class MainWindow(QMainWindow):
             )
             return
 
-        source_path: Path | None = None
-        temp_generated = False
+        # Die Bridge braucht die ESP-NOW-Bibliothek (nitbw_espnow.py) und das Programm (main.py).
+        uploads = (
+            (self._firmware_path("nitbw_espnow.py"), "nitbw_espnow.py"),
+            (self._firmware_path("esp32_bridge_micropython.py"), "main.py"),
+        )
         try:
-            source_path, label = self._firmware_source_for_deploy()
-            if not source_path.exists():
-                raise FirmwareDeployError(f"Firmware-Datei nicht gefunden: {source_path}")
-            temp_generated = source_path.name.startswith("tmp") and source_path.suffix == ".py"
+            for source_path, _target in uploads:
+                if not source_path.exists():
+                    raise FirmwareDeployError(f"Firmware-Datei nicht gefunden: {source_path}")
 
-            self._append_bridge_log(f"Firmware-Upload gestartet: {label} -> {port_name}")
-            self._copy_main_with_recovery(mpremote_launcher, port_name, source_path)
+            self._append_bridge_log(f"Firmware-Upload gestartet: Bridge -> {port_name}")
+            for source_path, target in uploads:
+                self._copy_file_with_recovery(mpremote_launcher, port_name, source_path, target)
 
             reset_cmd = [*mpremote_launcher, "connect", port_name, "reset"]
             reset_result = subprocess.run(reset_cmd, capture_output=True, text=True, timeout=20)
@@ -1522,16 +1597,10 @@ class MainWindow(QMainWindow):
                 detail = (reset_result.stderr or reset_result.stdout or "Unbekannter Fehler").strip()
                 self._append_bridge_log(f"Hinweis: Soft-Reset nicht erfolgreich ({detail})")
 
-            self._append_bridge_log("Firmware erfolgreich als main.py auf ESP32 geschrieben.")
-            QMessageBox.information(self, "Roboterarm", "Firmware wurde als main.py auf den ESP32 uebertragen.")
+            self._append_bridge_log("Bridge-Firmware erfolgreich auf den ESP32 geschrieben.")
+            QMessageBox.information(self, "Roboterarm", "Die Bridge-Firmware wurde auf den ESP32 uebertragen.")
         except (FirmwareDeployError, OSError, subprocess.SubprocessError) as exc:
             self._show_error(str(exc))
-        finally:
-            if temp_generated and source_path is not None:
-                try:
-                    source_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def _create_menu(self) -> None:
         tools_menu = self.menuBar().addMenu("Werkzeuge")
@@ -1679,13 +1748,214 @@ class MainWindow(QMainWindow):
 
         self.bridge_status.setText(f"Verbunden: {port_name} @ {baudrate}")
         self._append_bridge_log(f"Verbunden mit {port_name} @ {baudrate}.")
+        self.peer_last_ok = [None] * len(MOTOR_LAYOUT)
+        self.poll_timer.start()
         self._update_bridge_controls()
+        # Die Bridge antwortet mit ihrer MAC; die MAC-Liste wird beim Eintreffen von "ready" uebertragen.
+        self._send_to_bridge({"command": "info"})
 
     def disconnect_bridge(self) -> None:
+        self.poll_timer.stop()
         self.serial_bridge.disconnect()
         self.bridge_status.setText("Nicht verbunden")
+        self.peer_last_ok = [None] * len(MOTOR_LAYOUT)
         self._append_bridge_log("Serielle Verbindung getrennt.")
         self._update_bridge_controls()
+        self._refresh_espnow_status()
+
+    def _send_to_bridge(self, payload: dict[str, Any]) -> bool:
+        try:
+            self.serial_bridge.send_payload(payload)
+        except SerialBridgeError as exc:
+            self._append_bridge_log(f"Fehler: {exc}")
+            return False
+        return True
+
+    def _poll_bridge(self) -> None:
+        try:
+            lines = self.serial_bridge.read_lines()
+        except SerialBridgeError as exc:
+            self.disconnect_bridge()
+            self._append_bridge_log(f"Verbindung verloren: {exc}")
+            return
+        for line in lines:
+            self._handle_bridge_line(line)
+
+    def _motor_label(self, motor_id: int) -> str:
+        for known_id, _name, label in MOTOR_LAYOUT:
+            if known_id == motor_id:
+                return f"Motor {motor_id} ({label})"
+        return f"Motor {motor_id}"
+
+    def _handle_bridge_line(self, line: str) -> None:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            self._append_bridge_log(f"Bridge: {line}")
+            return
+        if not isinstance(msg, dict):
+            self._append_bridge_log(f"Bridge: {line}")
+            return
+
+        status = msg.get("status")
+        now = time.monotonic()
+        if status == "ready":
+            mac = str(msg.get("mac", ""))
+            self.bridge_mac_edit.setText(mac)
+            self._append_bridge_log(f"Bridge bereit, MAC {mac}")
+            self._send_peer_config()
+        elif status == "config":
+            self._append_bridge_log(f"Bridge kennt {msg.get('count', 0)} Schüler-ESP32.")
+        elif status == "tx":
+            motor_id = int(msg.get("motor_id", 0))
+            ok = msg.get("result") == "ok"
+            if 1 <= motor_id <= len(self.peer_last_ok):
+                self.peer_last_ok[motor_id - 1] = now if ok else None
+            self._append_bridge_log(
+                f"→ {self._motor_label(motor_id)} {msg.get('mac', '')}  "
+                f"{float(msg.get('target_deg', 0.0)):7.2f}°  {msg.get('duration_ms', 0)} ms  "
+                f"{'angekommen' if ok else 'KEINE Bestätigung'}"
+            )
+        elif status == "peer":
+            motor_id = int(msg.get("motor_id", 0))
+            if 1 <= motor_id <= len(self.peer_last_ok):
+                self.peer_last_ok[motor_id - 1] = now if msg.get("online") else None
+        elif status == "rx":
+            sender = normalize_mac(str(msg.get("mac", "")))
+            for index, edit in enumerate(self.peer_edits):
+                if sender is not None and normalize_mac(edit.text()) == sender:
+                    self.peer_last_ok[index] = now
+            self._append_bridge_log(f"← {msg.get('mac', '')}  {msg.get('data', '')}")
+        elif status == "ok":
+            self._append_bridge_log(
+                f"Befehl {msg.get('sequence')}: weitergeleitet {msg.get('forwarded', 0)}, "
+                f"ohne MAC/ungültig {msg.get('invalid', 0)}, ohne Bestätigung {msg.get('failed', 0)}"
+            )
+        elif status == "error":
+            self._append_bridge_log(f"Bridge-Fehler: {msg.get('message', '')}")
+        else:
+            self._append_bridge_log(f"Bridge: {line}")
+        self._refresh_espnow_status()
+
+    def _refresh_espnow_status(self) -> None:
+        now = time.monotonic()
+        configured = 0
+        online = 0
+        for index, edit in enumerate(self.peer_edits):
+            has_mac = normalize_mac(edit.text()) is not None
+            last_ok = self.peer_last_ok[index]
+            is_online = has_mac and last_ok is not None and now - last_ok < PEER_TIMEOUT_S
+            configured += has_mac
+            online += is_online
+            color = "#16a34a" if is_online else ("#94a3b8" if not has_mac else "#ef4444")
+            self.peer_dots[index].setStyleSheet(f"color: {color}; font-size: 18px;")
+            self.peer_dots[index].setToolTip("erreichbar" if is_online else ("nicht erreichbar" if has_mac else "keine MAC"))
+
+        if online:
+            text, color = f"● Verbunden – {online} von {configured} ESP32 erreichbar", "#16a34a"
+        elif self.serial_bridge.is_connected():
+            text, color = "● Bridge verbunden – kein ESP32 erreichbar", "#f59e0b"
+        else:
+            text, color = "● Nicht verbunden", "#94a3b8"
+        self.espnow_status.setText(text)
+        self.espnow_status.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 15px;")
+
+    # --- Roboter-Profile (MAC-Adressen) ------------------------------------
+    def _collect_macs(self) -> list[str] | None:
+        """Gibt die vier MACs (leer = nicht belegt) zurueck, None bei ungueltiger Eingabe."""
+        macs: list[str] = []
+        valid = True
+        for edit in self.peer_edits:
+            text = edit.text().strip()
+            normalized = normalize_mac(text) if text else ""
+            if normalized is None:
+                valid = False
+                edit.setStyleSheet("border: 1px solid #ef4444;")
+            else:
+                edit.setStyleSheet("")
+                macs.append(normalized)
+        return macs if valid else None
+
+    def _peer_edit_finished(self) -> None:
+        macs = self._collect_macs()
+        if macs is None:
+            return
+        for edit, mac in zip(self.peer_edits, macs):
+            edit.setText(mac)
+        self._send_peer_config()
+        self._refresh_espnow_status()
+
+    def _send_peer_config(self) -> None:
+        macs = self._collect_macs()
+        if macs is None or not self.serial_bridge.is_connected():
+            return
+        self.peer_last_ok = [None] * len(MOTOR_LAYOUT)
+        self._send_to_bridge({"command": "config", "peers": macs})
+
+    def _reload_profile_combo(self, select: str = "") -> None:
+        self.profile_combo.clear()
+        self.profile_combo.addItems(sorted(self.profile_store.profiles))
+        if select in self.profile_store.profiles:
+            self.profile_combo.setCurrentText(select)
+            self._load_profile()
+        else:
+            self.profile_combo.setCurrentIndex(-1)
+
+    def _load_profile(self, *_args: object) -> None:
+        name = self.profile_combo.currentText().strip()
+        macs = self.profile_store.profiles.get(name)
+        if macs is None:
+            return
+        for edit, mac in zip(self.peer_edits, macs):
+            edit.setText(mac)
+        self.profile_store.last = name
+        self._try_save_profiles()
+        self._collect_macs()
+        self._send_peer_config()
+        self._refresh_espnow_status()
+
+    def save_profile(self) -> None:
+        name = self.profile_combo.currentText().strip()
+        if not name:
+            self._show_error("Bitte einen Namen für den Roboter eingeben.")
+            return
+        macs = self._collect_macs()
+        if macs is None:
+            self._show_error("Mindestens eine MAC-Adresse ist ungültig (Format AA:BB:CC:DD:EE:FF).")
+            return
+        self.profile_store.profiles[name] = macs
+        self.profile_store.last = name
+        if self._try_save_profiles():
+            self._append_bridge_log(f"Konfiguration '{name}' gespeichert.")
+        self._reload_profile_combo()
+        self.profile_combo.setCurrentText(name)
+        self._send_peer_config()
+
+    def delete_profile(self) -> None:
+        name = self.profile_combo.currentText().strip()
+        if name not in self.profile_store.profiles:
+            return
+        answer = QMessageBox.question(self, "Roboterarm", f"Konfiguration '{name}' löschen?")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        del self.profile_store.profiles[name]
+        if self.profile_store.last == name:
+            self.profile_store.last = ""
+        self._try_save_profiles()
+        self._reload_profile_combo()
+
+    def _try_save_profiles(self) -> bool:
+        try:
+            self.profile_store.save()
+        except OSError as exc:
+            self._show_error(f"Konfiguration konnte nicht gespeichert werden: {exc}")
+            return False
+        return True
+
+    def copy_bridge_mac(self) -> None:
+        mac = self.bridge_mac_edit.text().strip()
+        if mac:
+            QApplication.clipboard().setText(mac)
 
     def _update_send_steps(self) -> None:
         current = self.send_step_combo.currentIndex()
@@ -1710,18 +1980,8 @@ class MainWindow(QMainWindow):
         frame = self.keyframes[index]
         seconds = GRIPPER_ACTION_S if frame.kind == "gripper" else self.duration.value()
         payload = build_serial_payload(f"Schritt {frame.label}", self.targets[frame.point_index], frame.state, seconds)
-        try:
-            responses = self.serial_bridge.send_payload(payload)
-        except SerialBridgeError as exc:
-            self._show_error(str(exc))
-            return
-
-        self._append_bridge_log(f"TX {frame.label}: {json.dumps(payload, ensure_ascii=True)}")
-        if responses:
-            for response in responses:
-                self._append_bridge_log(f"RX: {response}")
-        else:
-            self._append_bridge_log("Keine Rueckmeldung der Bridge empfangen.")
+        if self._send_to_bridge(payload):
+            self._append_bridge_log(f"Schritt {frame.label} an Bridge gesendet.")
 
     def _update_bridge_controls(self) -> None:
         connected = self.serial_bridge.is_connected()
@@ -1731,8 +1991,6 @@ class MainWindow(QMainWindow):
         self.send_step_combo.setEnabled(connected and self.send_step_combo.count() > 0)
         self.send_step_button.setEnabled(connected and self.send_step_combo.count() > 0)
         self.deploy_firmware_button.setEnabled(has_serial and not connected)
-        self.firmware_combo.setEnabled(not connected)
-        self.firmware_motor_id.setEnabled(not connected and self.firmware_combo.currentData() == "motor")
         self.refresh_ports_button.setEnabled(not connected)
         self.port_combo.setEnabled(not connected)
         self.baud_combo.setEnabled(not connected)
@@ -1771,7 +2029,7 @@ class MainWindow(QMainWindow):
         )
 
     def _append_bridge_log(self, text: str) -> None:
-        self.bridge_log.append(text)
+        self.bridge_log.append(f"{time.strftime('%H:%M:%S')}  {text}")
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "Roboterarm", message)
@@ -1779,6 +2037,8 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setOrganizationName("Roboterarm")
+    app.setApplicationName("Roboterarm")
     app.setStyle("Fusion")
     app.setFont(QFont(FONT_FAMILY, 13))
     app.setStyleSheet(APP_STYLE)
