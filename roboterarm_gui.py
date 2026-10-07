@@ -1484,6 +1484,10 @@ class MainWindow(QMainWindow):
         return self._runtime_root() / "esp32_bridge" / filename
 
     def _resolve_mpremote_launcher(self) -> list[str] | None:
+        # 0) Installierte App: mpremote ist eingebaut, die App startet sich selbst im mpremote-Modus.
+        if getattr(sys, "frozen", False):
+            return [sys.executable, MPREMOTE_FLAG]
+
         # 1) Wenn aus einer venv gestartet, liegt mpremote meistens neben dem Python-Interpreter.
         python_dir = Path(sys.executable).resolve().parent
         candidate_names = ("mpremote", "mpremote.exe")
@@ -2043,7 +2047,19 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Roboterarm", message)
 
 
+MPREMOTE_FLAG = "--mpremote"
+
+
+def run_embedded_mpremote() -> int:
+    from mpremote import main as mpremote_main
+
+    sys.argv = ["mpremote", *sys.argv[2:]]
+    return int(mpremote_main.main() or 0)
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == MPREMOTE_FLAG:
+        return run_embedded_mpremote()
     app = QApplication(sys.argv)
     app.setOrganizationName("Roboterarm")
     app.setApplicationName("Roboterarm")

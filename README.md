@@ -65,11 +65,7 @@ Im Fenster `ESP32-Kommunikation` gibt es den Button `Bridge-Firmware auf ESP32 s
 
 Die GUI schreibt `nitbw_espnow.py` (ESP-NOW-Bibliothek) und die Bridge als `main.py` auf den ESP32 (mit `mpremote`) und fuehrt einen Reset aus.
 
-Voraussetzung auf dem Rechner:
-
-```bash
-python3 -m pip install mpremote
-```
+In den fertigen Installern ist `mpremote` bereits eingebaut. Wenn die GUI direkt aus dem Quellcode gestartet wird, kommt es ueber `pip install -r requirements.txt`.
 
 ## Serielles Protokoll zur ESP32-Bridge
 

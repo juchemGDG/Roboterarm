@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
 import sys
 
@@ -25,7 +26,7 @@ a = Analysis(
     pathex=[str(project_root)],
     binaries=[],
     datas=added_files,
-    hiddenimports=[],
+    hiddenimports=collect_submodules('mpremote') + collect_submodules('serial'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
