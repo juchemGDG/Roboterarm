@@ -1560,11 +1560,12 @@ class MainWindow(QMainWindow):
         raise FirmwareDeployError(self._friendly_upload_error(last_detail))
 
     def deploy_bridge_firmware(self) -> None:
-        if self.serial_bridge.is_connected():
-            self._show_error("Bitte zuerst die serielle Bridge-Verbindung trennen.")
-            return
-
         port_name = self.port_combo.currentText().strip()
+        if self.serial_bridge.is_connected():
+            # Der Upload braucht den Port exklusiv.
+            port_name = self.serial_bridge.port_name
+            self.disconnect_bridge()
+
         if not port_name or port_name == "Kein Port gefunden":
             self._show_error("Bitte zuerst einen gueltigen seriellen Port auswaehlen.")
             return
@@ -1791,10 +1792,17 @@ class MainWindow(QMainWindow):
         try:
             msg = json.loads(line)
         except ValueError:
-            self._append_bridge_log(f"Bridge: {line}")
+            if "'command'" not in line:  # Python-Repr des Echos, siehe unten
+                self._append_bridge_log(f"Bridge: {line}")
             return
         if not isinstance(msg, dict):
             self._append_bridge_log(f"Bridge: {line}")
+            return
+        if "command" in msg:
+            self._append_bridge_log(
+                "Der ESP32 antwortet nur mit der MicroPython-Konsole – die Bridge-Firmware läuft nicht. "
+                "Bitte 'Bridge-Firmware auf ESP32 schreiben' klicken."
+            )
             return
 
         status = msg.get("status")
@@ -1990,7 +1998,7 @@ class MainWindow(QMainWindow):
         self.disconnect_bridge_button.setEnabled(connected)
         self.send_step_combo.setEnabled(connected and self.send_step_combo.count() > 0)
         self.send_step_button.setEnabled(connected and self.send_step_combo.count() > 0)
-        self.deploy_firmware_button.setEnabled(has_serial and not connected)
+        self.deploy_firmware_button.setEnabled(has_serial)
         self.refresh_ports_button.setEnabled(not connected)
         self.port_combo.setEnabled(not connected)
         self.baud_combo.setEnabled(not connected)
