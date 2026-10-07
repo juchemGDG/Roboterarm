@@ -102,7 +102,8 @@ Die Motoren werden von den Schuelern selbst angesteuert. Die GUI berechnet nur d
 3. Unter `ESP32 der Schueler` die MAC-Adressen der vier Schueler-ESP32 eintragen (Motor 1 bis 4). Leere Felder werden uebersprungen.
 4. Mit Namen und `Speichern` wird die Konfiguration pro Roboter abgelegt und kann spaeter ueber die Auswahlliste `Roboter` wieder geladen werden. Die Datei `roboter_profile.json` liegt im Anwendungsdaten-Ordner des Benutzers.
 5. Der Status zeigt `Verbunden – n von m ESP32 erreichbar`, sobald Schueler-ESP32 per ESP-NOW antworten. Der Punkt neben jedem Motor ist gruen (erreichbar), rot (MAC eingetragen, aber keine Antwort) oder grau (keine MAC).
-6. Unter `Uebertragene Daten` erscheinen alle gesendeten Winkel (`→`) und alle Nachrichten, die Schueler-ESP32 an die Bridge schicken (`←`).
+6. Der Button `Anleitung` zeigt die Beschreibung der Uebertragung ([esp32_bridge/uebertragung_anleitung.md](esp32_bridge/uebertragung_anleitung.md)).
+7. Unter `Uebertragene Daten` erscheinen alle gesendeten Winkel (`→`) und alle Nachrichten, die Schueler-ESP32 an die Bridge schicken (`←`).
 
 ESP-NOW kennt keine echte Verbindung. "Erreichbar" heisst: Die Bridge sendet alle 3 Sekunden ein `{"ping": 1}` an jede eingetragene MAC, und der ESP32 bestaetigt den Empfang auf Funkebene. Dafuer muss auf dem Schueler-ESP32 lediglich ESP-NOW aktiv sein.
 

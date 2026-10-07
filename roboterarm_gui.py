@@ -1227,6 +1227,7 @@ class MainWindow(QMainWindow):
         self.bridge_log.setFont(QFont("Courier New", 11))
         self.bridge_log.setMinimumHeight(180)
         self.clear_log_button = QPushButton("Leeren")
+        self.help_button = QPushButton("Anleitung")
         self.esp_dialog = self._create_esp_dialog()
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(100)
@@ -1307,6 +1308,7 @@ class MainWindow(QMainWindow):
         self.send_step_button.clicked.connect(self.send_selected_step)
         self.deploy_firmware_button.clicked.connect(self.deploy_bridge_firmware)
         self.copy_mac_button.clicked.connect(self.copy_bridge_mac)
+        self.help_button.clicked.connect(self.show_transfer_help)
         self.save_profile_button.clicked.connect(self.save_profile)
         self.delete_profile_button.clicked.connect(self.delete_profile)
         self.profile_combo.activated.connect(self._load_profile)
@@ -1462,10 +1464,34 @@ class MainWindow(QMainWindow):
         dialog_layout.addWidget(bridge_box)
         dialog_layout.addWidget(peers_box)
         dialog_layout.addWidget(data_box, stretch=1)
+        footer = QHBoxLayout()
+        footer.addWidget(self.help_button)
+        footer.addStretch(1)
         close_button = QPushButton("Schliessen")
         close_button.clicked.connect(dialog.accept)
-        dialog_layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        footer.addWidget(close_button)
+        dialog_layout.addLayout(footer)
         return dialog
+
+    def show_transfer_help(self) -> None:
+        path = self._firmware_path("uebertragung_anleitung.md")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            self._show_error(f"Anleitung konnte nicht geladen werden: {exc}")
+            return
+
+        dialog = QDialog(self.esp_dialog)
+        dialog.setWindowTitle("Anleitung - Datenübertragung")
+        dialog.resize(720, 640)
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setMarkdown(content)
+        layout.addWidget(browser)
+        close_button = QPushButton("Schliessen", dialog)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
 
     def open_esp_dialog(self) -> None:
         self.refresh_serial_ports()
