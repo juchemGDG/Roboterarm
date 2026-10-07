@@ -1,6 +1,7 @@
+import select
+import sys
 import time
 
-import machine
 import ujson
 from nitbw_espnow import ESPNow
 
@@ -22,9 +23,25 @@ def mac_to_bytes(mac_text):
         return None
 
 
+class Console:
+    """USB-Verbindung zum PC ueber stdin/stdout (UART0 der REPL laesst sich nicht umkonfigurieren)."""
+
+    def __init__(self):
+        self._poll = select.poll()
+        self._poll.register(sys.stdin, select.POLLIN)
+
+    def any(self):
+        return bool(self._poll.poll(0))
+
+    def readline(self):
+        return sys.stdin.readline().encode()
+
+    def write(self, text):
+        sys.stdout.write(text)
+
+
 def setup_uart():
-    # UART0 ist auf vielen ESP32-Boards die USB-Serial-Verbindung zum PC.
-    return machine.UART(0, baudrate=115200, timeout=20, rxbuf=4096)
+    return Console()
 
 
 def read_json_line(uart):
